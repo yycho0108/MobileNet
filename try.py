@@ -39,7 +39,7 @@ bottleneck_root = '/tmp/bottlenecks'
 if not os.path.exists(bottleneck_root):
     os.makedirs(bottleneck_root)
 
-categories = ['background'] + loader.list_image_sets()
+categories = loader.list_image_sets()
 num_classes = len(categories)
 batch_size = 64
 
@@ -202,22 +202,31 @@ def extended_ops(input_tensor, label_tensor, num_classes, is_training=True, reus
             with tf.name_scope('sw_%d' % i):
                 variable_summaries(w)
 
-    with tf.variable_scope('dist_scope', reuse=reuse) as scope:
-        dist = tf.get_variable('dist', initializer=np.ones(num_classes, dtype=np.float32), dtype=np.float32,trainable=False)
-        dist_update = dist.assign_add(tf.bincount(label_tensor, minlength=num_classes))
-        class_weights = (1.0/dist_update)
-        class_weights = num_classes * class_weights / tf.reduce_sum(class_weights)
-        tf.summary.histogram('dist', dist)
+    #with tf.variable_scope('dist_scope', reuse=reuse) as scope:
+    #    dist = tf.get_variable('dist', initializer=np.ones(num_classes, dtype=np.float32), dtype=np.float32,trainable=False)
+    #    dist_update = dist.assign_add(tf.reduce_sum(labels, axis=-1).reshape([-1]))
+    #    #dist_update = dist.assign_add(tf.bincount(label_tensor, minlength=num_classes))
+    #    class_weights = (1.0/dist_update)
+    #    class_weights = num_classes * class_weights / tf.reduce_sum(class_weights)
+    #    tf.summary.histogram('dist', dist)
 
-    labels = tf.one_hot(tf.cast(label_tensor, tf.uint8), depth=num_classes, axis=-1)
+    #labels = tf.one_hot(tf.cast(label_tensor, tf.uint8), depth=num_classes, axis=-1)
+    labels = label_tensor #(batch, n, h, c)
     pred = tf.nn.softmax(logits, -1)
     pred_label = tf.cast(tf.argmax(pred, axis=-1), tf.int32) # --> it's okay to apply this before softmax
     acc = tf.reduce_mean(tf.cast(tf.equal(pred_label, label_tensor), tf.float32))
 
-    obj_idx = tf.where(tf.max(pred, axis=-1) > 0.5) # high confidence for object presence
+    obj_mask_gt = tf.greater(tf.max(label_tensor, axis=-1), 0.5) # high confidence for object presence
+    obj_mask_pr = tf.greater(tf.max(pred, axis=-1), 0.5) # high confidence for object presence
+    obj_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=obj_mask_pr, labels=obj_mask_gt, tf.float32))
 
-    loss = tf.nn.softmax_cross_entropy_with_logits(labels = labels, logits = logits * class_weights)
-    loss = tf.reduce_mean(loss)
+    clf_idx = tf.where(obj_mask)
+    clf_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits = tf.gather_nd(logits, clf_idx), labels=tf.gather_nd(labels, clf_idx)))
+
+    loss = obj_loss + clf_lsos
+
+    #loss = tf.nn.softmax_cross_entropy_with_logits(labels = labels, logits = logits * class_weights)
+    #loss = tf.reduce_mean(loss)
 
     with tf.name_scope('evaluation'):
         tf.summary.scalar('loss', loss)
@@ -229,34 +238,53 @@ def extended_ops(input_tensor, label_tensor, num_classes, is_training=True, reus
             'loss' : loss,
             }
 
-def get_label(bbox, label, h, w):
-    res = np.zeros((h,w), dtype=np.float32)
+def overlap(r_a, r_b):
+    ya1,xa1,ya2,xa2 = r_a
+    yb1,xb1,yb2,xb2 = r_b
+    return max(0, min(xa2,xb2) - max(xa1,xb1)) * max(0, min(ya2,yb2) - max(ya1,yb1))
 
-    ars = map(lambda b : (b[2]-b[0])*(b[3]-b[1]), bbox)
-    idx = np.argsort(ars)
+def get_label(bbox, label, h, w, d):
+    res = np.zeros((h,w,d), dtype=np.float32)
+    w_f = 1.0/w
+    h_f = 1.0/h
+    for b,l in zip(bbox, label):
+        for i in range(h):
+            for j in range(w):
+                r = (i*h_f, j*w_f, (i+1)*h_f, (j+1)*w_f)
+                o = overlap(b,r)/(w_f*h_f)
+                res[i, j, l] += o
+    return res
 
-    for i in reversed(idx): # bigger one first
-        i0,j0,i1,j1 = map(int, bbox[i] * [h,w,h,w])
-        res[i0:i1, j0:j1] = label[i]
+
+    # res = np.zeros((h,w), dtype=np.float32)
+    # ars = map(lambda b : (b[2]-b[0])*(b[3]-b[1]), bbox)
+    # idx = np.argsort(ars)
+    # for i in reversed(idx): # bigger one first
+    #     i0,j0,i1,j1 = map(int, bbox[i] * [h,w,h,w])
+    #     res[i0:i1, j0:j1, label[i]] += 1.0
+    #     res[i0:i1, j0:j1, 0] = 0.0
 
     return np.expand_dims(res, 0)
 
 def basename(s):
     return os.path.splitext(os.path.basename(s))[0]
 
-def get_or_create_bottlenecks(sess, bottleneck_tensor, image, loader, anns, batch_size):
+def get_or_create_bottlenecks(sess, bottleneck_tensor, image, loader, anns, batch_size, force=False):
     _, h, w, d = bottleneck_tensor.get_shape().as_list()
     global dist
 
     btls = []
     lbls = []
 
-    for ann in np.random.choice(anns, batch_size, replace=False):
+    if batch_size > 0:
+        anns = np.random.choice(anns, batch_size, replace=False)
+
+    for ann in anns:
         ### GRAB DATA ###
         btl_file = os.path.join(bottleneck_root, ann + '_btl.npy')
         lbl_file = os.path.join(bottleneck_root, ann + '_lbl.npy')
 
-        if not os.path.exists(btl_file):
+        if force or not os.path.exists(btl_file):
             img_file, ann = loader.grab_pair(ann)
             image_in = cv2.imread(img_file)[...,::-1]/255.0
             bbox_in, label_in = ann2bbox(ann, categories)
@@ -333,7 +361,7 @@ def main(_):
             ### DEFINE MODEL ###
             bottleneck_tensor = tf.stop_gradient(sess.graph.get_tensor_by_name(bottleneck_name))
             _, h, w, d = bottleneck_tensor.get_shape().as_list()
-            label_tensor = tf.placeholder(tf.float32, (None, h, w))
+            label_tensor = tf.placeholder(tf.float32, (None, h, w, d))
             input_tensor = tf.placeholder_with_default(bottleneck_tensor, shape=(None, h, w, d))
             is_training = tf.placeholder(tf.bool, [], name='is_training')
 
