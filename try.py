@@ -170,9 +170,22 @@ def variable_summaries(var):
     tf.summary.scalar('min', tf.reduce_min(var))
     tf.summary.histogram('histogram', var)
 
+def dwc(inputs, num_out, scope):
+    dc = slim.separable_conv2d(inputs,
+            num_outputs=None,
+            stride=1,
+            depth_multiplier=1,
+            kernel_size=[3, 3],
+            scope=scope+'/dc')
+    pc = slim.conv2d(dc,
+            num_out,
+            kernel_size=[1, 1],
+            scope=scope+'/pc')
+    return pc
+
 def extended_ops(input_tensor, label_tensor, num_classes, is_training=True, reuse=None):
 
-    with slim.arg_scope([slim.conv2d],
+    with slim.arg_scope([slim.conv2d, slim.separable_convolution2d],
             activation_fn=tf.nn.relu,
             weights_regularizer=slim.l2_regularizer(0.005),
             normalizer_fn = slim.batch_norm,
@@ -183,29 +196,24 @@ def extended_ops(input_tensor, label_tensor, num_classes, is_training=True, reus
                 'reuse' : reuse,
                 }
             ):
-        # depthwise separable convolution?
-        #o = slim.conv2d(
+
+        logits = dwc(input_tensor, 256, scope='dwc_4')
+        logits = dwc(logits, num_classes, scope='dwc_5')
+
+        #logits = slim.conv2d(
         #        input_tensor,
-        #        1,
+        #        num_classes,
         #        [3,3],
         #        padding='SAME',
-        #        scope='conv_1',
+        #        scope='conv_2',
         #        reuse=reuse,
-        #        ) #--> (b,h,w,num_classes)
-        logits = slim.conv2d(
-                input_tensor,
-                num_classes,
-                [3,3],
-                padding='SAME',
-                scope='conv_2',
-                reuse=reuse,
-                )
+        #        )
 
-    if reuse is None:
-        ws = slim.get_variables_by_name('weights')
-        for i, w in enumerate(ws):
-            with tf.name_scope('sw_%d' % i):
-                variable_summaries(w)
+    #if reuse is None:
+    #    ws = slim.get_variables_by_name('weights')
+    #    for i, w in enumerate(ws):
+    #        with tf.name_scope('sw_%d' % i):
+    #            variable_summaries(w)
 
     #with tf.variable_scope('dist_scope', reuse=reuse) as scope:
     #    dist = tf.get_variable('dist', initializer=np.ones(num_classes, dtype=np.float32), dtype=np.float32,trainable=False)
@@ -438,7 +446,6 @@ def main(_):
                 # if cv2.waitKey(0) == 27:
                 #     break
                 #############################
-
 
                 ### RUN PREDICTION ###
                 #c_pred = sess.run(predictions, feed_dict={image : c_image})
