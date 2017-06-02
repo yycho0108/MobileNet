@@ -40,11 +40,6 @@ parser.add_argument(
     type=str,
     help='Absolute path to labels file (.txt)')
 parser.add_argument(
-    '--output_layer',
-    type=str,
-    default='pred_box:0',
-    help='Name of the result operation')
-parser.add_argument(
     '--input_layer',
     type=str,
     default='input:0',
@@ -73,41 +68,43 @@ def load_graph(filename):
     tf.import_graph_def(graph_def, name='')
 
 
-def run_graph(sess, image_data, labels, input_layer_name, output_layer_name,
+def run_graph(sess, image_data, labels, input_layer_name, output_names,
               num_top_predictions):
-    for op in sess.graph.get_operations():
-        print('op', op.name)
+    #for op in sess.graph.get_operations():
+    #    print('op', op.name)
     # Feed the image_data as input to the graph.
     #   predictions  will contain a two-dimensional array, where one
     #   dimension represents the input image count, and the other has
     #   predictions per class
-    softmax_tensor = sess.graph.get_tensor_by_name(output_layer_name)
+    output_tensors = [sess.graph.get_tensor_by_name(o) for o in output_names]
+
     is_training = sess.graph.get_tensor_by_name('is_training:0')
-    predictions = sess.run(softmax_tensor, {input_layer_name: image_data, is_training : False})
-    predictions = np.squeeze(predictions, [2]) # 7x7xnum_classes
+    box, cls, val = sess.run(output_tensors, {input_layer_name: image_data, is_training : False})
 
-    pred_lab = np.argmax(predictions, 2)
-    pred_val = np.max(predictions, 2)
+    print box[0], cls[0]
 
-    
-    # Sort to show labels in order of confidence
-    k = np.bincount(pred_lab.flatten(),minlength=21)
+    return box, cls, val
 
-    top_k = np.argsort(k)[-num_top_predictions:]
+    #pred_lab = np.argmax(predictions, 2)
+    #pred_val = np.max(predictions, 2)
+    #
+    ## Sort to show labels in order of confidence
+    #k = np.bincount(pred_lab.flatten(),minlength=21)
 
-    pred_lab[pred_val < 0.10] = 20 # == background
+    #top_k = np.argsort(k)[-num_top_predictions:]
 
-    print('Top %d : ' % num_top_predictions)
-    for node_id in reversed(top_k):
-        human_string = labels[node_id]
-        vals = pred_val[pred_lab == node_id]
-        if len(vals) <= 0:
-            break
-        score = np.max(pred_val[pred_lab == node_id]) #/ np.sum(pred_val)
-        print('\t %s (score = %.5f)' % (human_string, score))
-    ## visualization
+    #pred_lab[pred_val < 0.10] = 20 # == background
 
-    return pred_lab, pred_val, top_k
+    #print('Top %d : ' % num_top_predictions)
+    #for node_id in reversed(top_k):
+    #    human_string = labels[node_id]
+    #    vals = pred_val[pred_lab == node_id]
+    #    if len(vals) <= 0:
+    #        break
+    #    score = np.max(pred_val[pred_lab == node_id]) #/ np.sum(pred_val)
+    #    print('\t %s (score = %.5f)' % (human_string, score))
+    ### visualization
+    #return pred_lab, pred_val, top_k
 
 def resize(in_frame, h, w):
 
@@ -163,32 +160,22 @@ def main(argv):
       def run(image_path):
           image_data = load_image(image_path)
           with Timer('Detection'):
-              lab,val,top_k = run_graph(sess,image_data, labels, FLAGS.input_layer, FLAGS.output_layer,
+              box, cls, val = run_graph(sess,image_data, labels, FLAGS.input_layer, ['pred_box:0', 'pred_cls:0', 'pred_val:0'],
                         FLAGS.num_top_predictions)
 
           frame = cv2.imread(image_path)
           h,w,_ = frame.shape
           lab_frame = np.zeros((7,7,3), dtype=np.uint8)
 
-          for k in top_k:
-              i,j = np.where(lab==k)
-              lab_frame[i,j] = colors[k] #(np.outer(val[i,j], colors[k]) +  np.outer((1.0 - val[i,j]), [0,0,0])).astype(np.uint8)
+          print val
+          drawn = sess.run(tf.image.draw_bounding_boxes(np.expand_dims(frame,0), np.expand_dims(box,0)))[0]
 
-          lab_frame = cv2.cvtColor(lab_frame, cv2.COLOR_BGR2BGRA)
-          lab_frame = (lab_frame * np.expand_dims(val, -1)).astype(np.uint8)
-          lab_frame = resize(lab_frame, h, w)
           cv2.imshow('frame', frame)
-          cv2.imshow('labels', lab_frame)
-          cv2.imshow('overlay', cv2.addWeighted(cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA), 0.5, lab_frame, 0.5, 0))
+          cv2.imshow('drawn', drawn)
 
-          def query(event, x, y, flags, param):
-              if event == cv2.EVENT_LBUTTONDOWN:
-                  i, j = int(y*7/h), int(x*7/w)
-                  print 'label : %s, value : %f' % (labels[lab[i,j]], val[i,j])
-
-          cv2.setMouseCallback('overlay', query)
           if cv2.waitKey(0) == 27:
               return False
+
           return True
 
       if FLAGS.loop:

@@ -43,18 +43,18 @@ def overlap(a, b):
 
 def rect_area(r):
     y1,x1,y2,x2 = r
-    return (x2-x1) * (y2-y1)
+    return (x2-x1)*(y2-y1)
 
 def jaccard(a,b):
     i = overlap(a,b) # intersection
     u = rect_area(a) + rect_area(b) - i
-    eps = 1e-3
+    eps = 1e-9
     return i/(u+eps)
 
 def calc_offsets(src, dst):
     s_y1,s_x1,s_y2,s_x2 = src
     d_y1,d_x1,d_y2,d_x2 = dst
-    eps = 1e-3
+    eps = 1e-9
 
     dy = 0.5 * ((d_y1+d_y2)-(s_y1+s_y2))
     dx = 0.5 * ((d_x1+d_x2)-(s_x1+s_x2))
@@ -112,15 +112,18 @@ def pred(output_tensors, df_boxes, num_classes, num_boxes, max_output_size=100, 
 
         out_box,cls = tf.split(output, [4, -1], axis=4)
 
+        cls = tf.nn.softmax(cls)
+
         b = tf.shape(out_box)[0]
 
-        pred_cls = tf.reshape(tf.argmax(cls, axis=-1), (-1,num_boxes)) # [b,h,w,n]
+        pred_cls = tf.reshape(tf.argmax(cls, axis=-1), [-1]) # [b,h,w,n]
         pred_val = tf.reshape(tf.reduce_max(cls, axis=-1), [-1])
 
         box = np.reshape(box, (-1, 4))
         out_box = tf.reshape(out_box, (b, -1,4))
 
         y1,x1,y2,x2 = np.transpose(box)
+
         dy,dx,dh,dw = tf.unstack(out_box, axis=-1)
 
         dh,dw = tf.exp(dh), tf.exp(dw)
@@ -131,7 +134,7 @@ def pred(output_tensors, df_boxes, num_classes, num_boxes, max_output_size=100, 
         w,h = w*dw, h*dw
         y1,x1,y2,x2 = (y-h/2),(x-w/2),(y+h/2),(x+w/2)
 
-        out_box = tf.reshape(tf.stack([x,y,w,h], axis=-1), (-1,4))
+        out_box = tf.reshape(tf.stack([y1,x1,y2,x2], axis=-1), (-1,4))
 
         s_boxes.append(out_box) # center-based, to simplify calculations
         s_cls.append(pred_cls)
@@ -141,10 +144,11 @@ def pred(output_tensors, df_boxes, num_classes, num_boxes, max_output_size=100, 
     s_cls = tf.concat(s_cls, -1)
     s_val = tf.concat(s_val, -1)
 
+    #with tf.control_dependencies([tf.assert_equal(tf.shape(s_boxes)[0], tf.shape(s_cls)[0])]):
     idx = tf.image.non_max_suppression(s_boxes, s_val, max_output_size = max_output_size, iou_threshold=iou_threshold)
     return tf.gather(s_boxes, idx), tf.gather(s_cls, idx), tf.gather(s_val, idx)
 
-def eval(output, target, num_classes, pos_neg_ratio=3.0, alpha = 0.03): # --> per tensor
+def eval(output, target, num_classes, pos_neg_ratio=3.0, alpha = 0.03, conf_thresh = 0.3): # --> per tensor
     # output = [b*h*w*n, 4 + num_classes] ???
     # target = [b*h*w*n, 4 + num_classes] ???
 
@@ -158,7 +162,7 @@ def eval(output, target, num_classes, pos_neg_ratio=3.0, alpha = 0.03): # --> pe
     t_conf = tf.reduce_max(t_cls, -1)
 
     ### POSITIVE (Object Exists)
-    p_mask = (t_conf > 0.5) # == i.e. object found at location
+    p_mask = (t_conf > conf_thresh) # == i.e. object found at location
     p_mask_f = tf.cast(p_mask, tf.float32)
     n_pos = tf.reduce_sum(p_mask_f)
 
@@ -183,8 +187,8 @@ def eval(output, target, num_classes, pos_neg_ratio=3.0, alpha = 0.03): # --> pe
     pos_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=y_cls, labels=t_pred) * p_mask_f
     neg_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=y_cls, labels=tf.cast(p_mask, tf.int32)) * n_mask_f
 
-    #loc_loss = smooth_l1(y_loc - t_loc) * p_mask_f
-    loc_loss = alpha * tf.nn.l2_loss(y_loc - t_loc) * p_mask_f
+    loc_loss = smooth_l1(y_loc - t_loc) * p_mask_f
+    #loc_loss = alpha * tf.nn.l2_loss(y_loc - t_loc) * p_mask_f
 
     with tf.name_scope('losses'):
         pos_loss = tf.reduce_mean(pos_loss)
@@ -196,7 +200,10 @@ def eval(output, target, num_classes, pos_neg_ratio=3.0, alpha = 0.03): # --> pe
         loc_loss = tf.reduce_mean(loc_loss)
         tf.summary.scalar('loc', loc_loss)
 
-    acc_mask = tf.where(p_mask, tf.equal(y_pred, t_pred), tf.equal(n_mask, (y_conf < 0.5)))
+    #obj_acc = tf.equal(y_pred, t_pred)
+    #clf_acc = tf.equal(n_mask, (y_conf < conf_thresh))
+
+    acc_mask = tf.where(p_mask, tf.equal(y_pred, t_pred), tf.equal(n_mask, (y_conf < conf_thresh)))
     acc = tf.reduce_mean(tf.cast(acc_mask, tf.float32))
 
     return (pos_loss + neg_loss + loc_loss), acc

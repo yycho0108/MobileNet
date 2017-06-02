@@ -215,7 +215,7 @@ def extended_ops(input_tensor, label_tensor, num_classes, is_training=True, reus
     return {
             'box' : tf.identity(pred_box, name='pred_box'),
             'cls' : tf.identity(pred_cls, name='pred_cls'),
-            'score' : tf.identity(pred_val, name='pred_vals'),
+            'score' : tf.identity(pred_val, name='pred_val'),
             'loss' : loss,
             'acc' : acc,
             }
@@ -355,7 +355,7 @@ def main(_):
             
             df_boxes = [ssd.default_box(bottleneck_tensor, box_ratios)]
 
-            # cache call
+            # cache call - comment when run once
             #get_or_create_bottlenecks(sess, bottleneck_tensor, image, loader, anns, df_boxes, batch_size=-1)
 
             for i in range(train_iters):
@@ -369,7 +369,7 @@ def main(_):
                     btls, lbls = get_or_create_bottlenecks(sess, bottleneck_tensor, image, loader, anns_valid, df_boxes, valid_batch_size)
 
                     l, a, s = sess.run([train['loss'], train['acc'], merged], feed_dict={input_tensor : btls, label_tensor: lbls, is_training : False})
-                    #b, c, sc = sess.run([train['box'], train['cls'], train['score']], feed_dict={input_tensor : btls, label_tensor: lbls, is_training : False})
+                    b, c, sc = sess.run([train['box'], train['cls'], train['score']], feed_dict={input_tensor : btls, label_tensor: lbls, is_training : False})
 
                     valid_writer.add_summary(s, i)
                     print('%d ) Loss : %.3f, Accuracy : %.2f' % (i, l, a))
