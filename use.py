@@ -9,6 +9,8 @@ import tensorflow as tf
 import numpy as np
 import cv2
 
+from timer import Timer
+
 def str2bool(v):
     if v.lower() in ('yes', 'true', 't', 'y', '1'):
         return True
@@ -160,8 +162,9 @@ def main(argv):
 
       def run(image_path):
           image_data = load_image(image_path)
-          lab,val,top_k = run_graph(sess,image_data, labels, FLAGS.input_layer, FLAGS.output_layer,
-                    FLAGS.num_top_predictions)
+          with Timer('Detection'):
+              lab,val,top_k = run_graph(sess,image_data, labels, FLAGS.input_layer, FLAGS.output_layer,
+                        FLAGS.num_top_predictions)
 
           frame = cv2.imread(image_path)
           h,w,_ = frame.shape
