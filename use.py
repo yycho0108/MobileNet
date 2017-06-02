@@ -29,10 +29,12 @@ parser.add_argument(
     '--graph',
     required=True,
     type=str,
+    default='/tmp/output_graph.pb',
     help='Absolute path to graph file (.pb)')
 parser.add_argument(
     '--labels',
     required=True,
+    default='/tmp/labels.txt',
     type=str,
     help='Absolute path to labels file (.txt)')
 parser.add_argument(
@@ -48,7 +50,6 @@ parser.add_argument(
 parser.add_argument(
     '--loop',
     type=str2bool,
-    default='',
     help='Loop through directory, instead of single file.')
 
 
@@ -86,19 +87,44 @@ def run_graph(sess, image_data, labels, input_layer_name, output_layer_name,
     pred_lab = np.argmax(predictions, 2)
     pred_val = np.max(predictions, 2)
 
+    
     # Sort to show labels in order of confidence
     k = np.bincount(pred_lab.flatten(),minlength=21)
 
     top_k = np.argsort(k)[-num_top_predictions:]
 
+    pred_lab[pred_val < 0.10] = 20 # == background
+
     print('Top %d : ' % num_top_predictions)
     for node_id in reversed(top_k):
         human_string = labels[node_id]
-        score = np.sum(pred_val[pred_lab == node_id]) / np.sum(pred_val)
+        vals = pred_val[pred_lab == node_id]
+        if len(vals) <= 0:
+            break
+        score = np.max(pred_val[pred_lab == node_id]) #/ np.sum(pred_val)
         print('\t %s (score = %.5f)' % (human_string, score))
     ## visualization
 
     return pred_lab, pred_val, top_k
+
+def resize(in_frame, h, w):
+
+    s = in_frame.shape
+
+    if len(s) >= 3:
+        d = s[2]
+    else:
+        d = 1
+
+    out_frame = np.zeros((h,w,d), dtype=in_frame.dtype)
+    
+    ih, iw = in_frame.shape[:2]
+    for i in range(ih):
+        for j in range(iw):
+            i_s, i_e, j_s, j_e = map( lambda (a,b,c) : int(np.round(float(a)*b/c)),
+                    [(i,h,ih),(i+1,h,ih),(j,w,iw),(j+1,w,iw)])
+            out_frame[i_s:i_e,j_s:j_e] = in_frame[i,j]
+    return out_frame
 
 
 def main(argv):
@@ -116,35 +142,48 @@ def main(argv):
     tf.logging.fatal('graph file does not exist %s', FLAGS.graph)
 
   WHITE = np.asarray([255,255,255], dtype=np.uint8)
-  colors = [WHITE]
+  colors = []
   for i in range(20):
       color = np.squeeze(cv2.cvtColor(np.asarray([[[i * 8, 255, 255]]],dtype=np.uint8), cv2.COLOR_HSV2BGR))
       colors.append([int(c) for c in color])
+  #for i in range(10):
+  #    color = np.squeeze(cv2.cvtColor(np.asarray([[[i * 18, 255, 255]]],dtype=np.uint8), cv2.COLOR_HSV2BGR))
+  #    colors.append([int(c) for c in color])
+  colors.append(WHITE)
 
   with tf.Session() as sess:
 
       # load labels
-      labels = load_labels(FLAGS.labels)
+      labels = load_labels(FLAGS.labels) + ['background']
           # load graph, which is stored in the default session
       load_graph(FLAGS.graph)
 
       def run(image_path):
-
           image_data = load_image(image_path)
           lab,val,top_k = run_graph(sess,image_data, labels, FLAGS.input_layer, FLAGS.output_layer,
                     FLAGS.num_top_predictions)
 
           frame = cv2.imread(image_path)
           h,w,_ = frame.shape
-          lab_frame = np.zeros((7,7,3))
+          lab_frame = np.zeros((7,7,3), dtype=np.uint8)
 
           for k in top_k:
               i,j = np.where(lab==k)
-              lab_frame[i,j] = np.outer(val[i,j], colors[k]) # set color
+              lab_frame[i,j] = colors[k] #(np.outer(val[i,j], colors[k]) +  np.outer((1.0 - val[i,j]), [0,0,0])).astype(np.uint8)
 
-          #lab_frame = cv2.resize(lab_frame, (255,255), 0, 0, cv2.INTER_NEAREST)
+          lab_frame = cv2.cvtColor(lab_frame, cv2.COLOR_BGR2BGRA)
+          lab_frame = (lab_frame * np.expand_dims(val, -1)).astype(np.uint8)
+          lab_frame = resize(lab_frame, h, w)
           cv2.imshow('frame', frame)
           cv2.imshow('labels', lab_frame)
+          cv2.imshow('overlay', cv2.addWeighted(cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA), 0.5, lab_frame, 0.5, 0))
+
+          def query(event, x, y, flags, param):
+              if event == cv2.EVENT_LBUTTONDOWN:
+                  i, j = int(y*7/h), int(x*7/w)
+                  print 'label : %s, value : %f' % (labels[lab[i,j]], val[i,j])
+
+          cv2.setMouseCallback('overlay', query)
           if cv2.waitKey(0) == 27:
               return False
           return True

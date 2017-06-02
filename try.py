@@ -35,7 +35,7 @@ log_root = '/tmp/mobilenet_logs/'
 if not os.path.exists(log_root):
     os.makedirs(log_root)
 
-bottleneck_root = '/tmp/bottlenecks'
+bottleneck_root = 'data/bottlenecks'
 if not os.path.exists(bottleneck_root):
     os.makedirs(bottleneck_root)
 
@@ -47,9 +47,9 @@ MODEL_INPUT_WIDTH = 224
 MODEL_INPUT_HEIGHT = 224
 MODEL_INPUT_DEPTH = 3
 
-train_iters = 4000
+train_iters = 1000
 split_ratio = 0.85
-learning_rate = 4e-3
+learning_rate = 1e-3
 
 tf.logging.set_verbosity(tf.logging.INFO)
 ##################
@@ -156,7 +156,7 @@ def ann2bbox(ann, categories):
         x_max = float(box.findChild('xmax').contents[0]) / width
         bbox.append([y_min,x_min,y_max,x_max])
 
-    return np.asarray(bbox, dtype=np.float32), np.asarray(labels, dtype=np.float32)
+    return np.asarray(bbox, dtype=np.float32), np.asarray(labels, dtype=np.int32)
 
 def variable_summaries(var):
   """Attach a lot of summaries to a Tensor (for TensorBoard visualization)."""
@@ -176,7 +176,12 @@ def extended_ops(input_tensor, label_tensor, num_classes, is_training=True, reus
             activation_fn=tf.nn.relu,
             weights_regularizer=slim.l2_regularizer(0.005),
             normalizer_fn = slim.batch_norm,
-            normalizer_params={'is_training' : is_training}
+            normalizer_params={
+                'is_training' : is_training,
+                'decay' : 0.9,
+                'fused' : True,
+                'reuse' : reuse,
+                }
             ):
         # depthwise separable convolution?
         #o = slim.conv2d(
@@ -211,19 +216,25 @@ def extended_ops(input_tensor, label_tensor, num_classes, is_training=True, reus
     #    tf.summary.histogram('dist', dist)
 
     #labels = tf.one_hot(tf.cast(label_tensor, tf.uint8), depth=num_classes, axis=-1)
-    labels = label_tensor #(batch, n, h, c)
+    labels = label_tensor #(b, n, h, c)
     pred = tf.nn.softmax(logits, -1)
-    pred_label = tf.cast(tf.argmax(pred, axis=-1), tf.int32) # --> it's okay to apply this before softmax
-    acc = tf.reduce_mean(tf.cast(tf.equal(pred_label, label_tensor), tf.float32))
 
-    obj_mask_gt = tf.greater(tf.max(label_tensor, axis=-1), 0.5) # high confidence for object presence
-    obj_mask_pr = tf.greater(tf.max(pred, axis=-1), 0.5) # high confidence for object presence
-    obj_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=obj_mask_pr, labels=obj_mask_gt, tf.float32))
+    label_pr = tf.cast(tf.argmax(pred, axis=-1), tf.int32) # --> it's okay to apply this before softmax
+    label_gt = tf.cast(tf.argmax(label_tensor, axis=-1), tf.int32)
 
-    clf_idx = tf.where(obj_mask)
-    clf_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits = tf.gather_nd(logits, clf_idx), labels=tf.gather_nd(labels, clf_idx)))
+    #acc = tf.reduce_mean(tf.cast(tf.equal(pred_label, label_tensor), tf.float32))
 
-    loss = obj_loss + clf_lsos
+    obj_mask_gt = tf.greater(tf.reduce_max(label_tensor, axis=-1), 0.25) # high confidence for object presence
+    obj_mask_pr = tf.greater(tf.reduce_max(pred, axis=-1),         0.25)
+
+    obj_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=tf.cast(obj_mask_pr,tf.float32), labels=tf.cast(obj_mask_gt,tf.float32)))
+
+    clf_idx = tf.where(obj_mask_gt)
+    clf_loss = tf.reduce_mean(tf.gather_nd(tf.nn.softmax_cross_entropy_with_logits(logits = logits, labels = labels), clf_idx))
+
+    acc = tf.reduce_mean(tf.cast(tf.where(obj_mask_gt, tf.equal(label_pr, label_gt), tf.equal(obj_mask_gt, obj_mask_pr)), tf.float32))
+
+    loss = obj_loss + clf_loss # alpha factor??
 
     #loss = tf.nn.softmax_cross_entropy_with_logits(labels = labels, logits = logits * class_weights)
     #loss = tf.reduce_mean(loss)
@@ -269,35 +280,41 @@ def get_label(bbox, label, h, w, d):
 def basename(s):
     return os.path.splitext(os.path.basename(s))[0]
 
-def get_or_create_bottlenecks(sess, bottleneck_tensor, image, loader, anns, batch_size, force=False):
+def get_or_create_bottlenecks(sess, bottleneck_tensor, image, loader, anns, batch_size=1):
     _, h, w, d = bottleneck_tensor.get_shape().as_list()
-    global dist
+
+    all = (batch_size <= 0)
+
+    if not all:
+        anns = np.random.choice(anns, batch_size, replace=False)
 
     btls = []
     lbls = []
 
-    if batch_size > 0:
-        anns = np.random.choice(anns, batch_size, replace=False)
 
-    for ann in anns:
+    for i, ann in enumerate(anns):
+
+        if all and i%100==0:
+            print '%d ) %s' % (i, ann)
+
         ### GRAB DATA ###
         btl_file = os.path.join(bottleneck_root, ann + '_btl.npy')
         lbl_file = os.path.join(bottleneck_root, ann + '_lbl.npy')
 
-        if force or not os.path.exists(btl_file):
+        if all or not os.path.exists(btl_file):
             img_file, ann = loader.grab_pair(ann)
             image_in = cv2.imread(img_file)[...,::-1]/255.0
             bbox_in, label_in = ann2bbox(ann, categories)
-            btl = sess.run(bottleneck_tensor, feed_dict={image : image_in})
-            lbl = get_label(bbox_in, label_in, w, h)
-            np.save(btl_file, btl, allow_pickle=True)
+            #btl = sess.run(bottleneck_tensor, feed_dict={image : image_in})
+            lbl = get_label(bbox_in, label_in, h, w, num_classes)
+            #np.save(btl_file, btl, allow_pickle=True)
             np.save(lbl_file, lbl, allow_pickle=True)
 
-        btl = np.load(btl_file, allow_pickle=True)
-        lbl = np.load(lbl_file, allow_pickle=True)
-
-        btls.append(btl)
-        lbls.append(lbl)
+        if not all:
+            btl = np.load(btl_file, allow_pickle=True)
+            lbl = np.load(lbl_file, allow_pickle=True)
+            btls.append(btl)
+            lbls.append(lbl)
         #################
 
         ### RUN DISTORTION ###
@@ -305,10 +322,12 @@ def get_or_create_bottlenecks(sess, bottleneck_tensor, image, loader, anns, batc
         #btl = sess.run(bottleneck_tensor, feed_dict={image : d_im})
         #lbl = get_label(d_bb, d_lbl, w,h)
         ######################
-
-    btls = np.concatenate(btls, axis=0)
-    lbls = np.concatenate(lbls, axis=0)
-    return btls, lbls
+    if not all:
+        btls = np.concatenate(btls, axis=0)
+        lbls = np.stack(lbls, axis=0)
+        return btls, lbls
+    else:
+        return [], []
 
 def main(_):
 
@@ -361,13 +380,15 @@ def main(_):
             ### DEFINE MODEL ###
             bottleneck_tensor = tf.stop_gradient(sess.graph.get_tensor_by_name(bottleneck_name))
             _, h, w, d = bottleneck_tensor.get_shape().as_list()
-            label_tensor = tf.placeholder(tf.float32, (None, h, w, d))
+            label_tensor = tf.placeholder(tf.float32, (None, h, w, num_classes))
             input_tensor = tf.placeholder_with_default(bottleneck_tensor, shape=(None, h, w, d))
             is_training = tf.placeholder(tf.bool, [], name='is_training')
 
             train = extended_ops(input_tensor, label_tensor, num_classes, is_training=is_training, reuse=None)
-
-            opt = tf.train.AdamOptimizer(learning_rate = learning_rate).minimize(train['loss'])
+            
+            update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+            with tf.control_dependencies(update_ops):
+                opt = tf.train.AdamOptimizer(learning_rate = learning_rate).minimize(train['loss'])
             ####################
 
             sess.run(tf.global_variables_initializer())
@@ -386,10 +407,12 @@ def main(_):
             anns = loader.list_all()
             np.random.shuffle(anns)
             n = len(anns)
-            print('n', n) # overfitting?
             sp = int(n * split_ratio)
             anns_train = anns[:sp]
             anns_valid = anns[sp:]
+
+            # cache call
+            #get_or_create_bottlenecks(sess, bottleneck_tensor, image, loader, anns, batch_size=-1)
 
             for i in range(train_iters):
                 btls, lbls = get_or_create_bottlenecks(sess, bottleneck_tensor, image, loader, anns_train, batch_size)
@@ -397,7 +420,7 @@ def main(_):
                 s,_ = sess.run([merged, opt], feed_dict={input_tensor : btls, label_tensor: lbls, is_training : True})
                 train_writer.add_summary(s, i)
 
-                if i % 20 == 0:
+                if i % 20 == 0: # -- evaluate
                     btls, lbls = get_or_create_bottlenecks(sess, bottleneck_tensor, image, loader, anns_valid, 1)
                     a,l,s = sess.run([train['acc'], train['loss'], merged], feed_dict={input_tensor : btls, label_tensor: lbls, is_training : False})
                     valid_writer.add_summary(s, i)
