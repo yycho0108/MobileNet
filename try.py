@@ -184,72 +184,72 @@ def dwc(inputs, num_out, scope):
     return pc
 
 def extended_ops(input_tensor, label_tensor, num_classes, is_training=True, reuse=None):
+    with tf.name_scope('extended_ops') as sc:
+        with slim.arg_scope([slim.conv2d, slim.separable_convolution2d],
+                activation_fn=tf.nn.relu,
+                weights_regularizer=slim.l2_regularizer(0.005),
+                normalizer_fn = slim.batch_norm,
+                normalizer_params={
+                    'is_training' : is_training,
+                    'decay' : 0.95,
+                    'fused' : True,
+                    'reuse' : reuse,
+                    }
+                ):
 
-    with slim.arg_scope([slim.conv2d, slim.separable_convolution2d],
-            activation_fn=tf.nn.relu,
-            weights_regularizer=slim.l2_regularizer(0.005),
-            normalizer_fn = slim.batch_norm,
-            normalizer_params={
-                'is_training' : is_training,
-                'decay' : 0.9,
-                'fused' : True,
-                'reuse' : reuse,
-                }
-            ):
+            logits = dwc(input_tensor, 256, scope='dwc_1')
+            logits = dwc(logits, num_classes, scope='dwc_2')
 
-        logits = dwc(input_tensor, 256, scope='dwc_4')
-        logits = dwc(logits, num_classes, scope='dwc_5')
+            #logits = slim.conv2d(
+            #        input_tensor,
+            #        num_classes,
+            #        [3,3],
+            #        padding='SAME',
+            #        scope='conv_2',
+            #        reuse=reuse,
+            #        )
 
-        #logits = slim.conv2d(
-        #        input_tensor,
-        #        num_classes,
-        #        [3,3],
-        #        padding='SAME',
-        #        scope='conv_2',
-        #        reuse=reuse,
-        #        )
+        #if reuse is None:
+        #    ws = slim.get_variables_by_name('weights')
+        #    for i, w in enumerate(ws):
+        #        with tf.name_scope('sw_%d' % i):
+        #            variable_summaries(w)
 
-    #if reuse is None:
-    #    ws = slim.get_variables_by_name('weights')
-    #    for i, w in enumerate(ws):
-    #        with tf.name_scope('sw_%d' % i):
-    #            variable_summaries(w)
+        #with tf.variable_scope('dist_scope', reuse=reuse) as scope:
+        #    dist = tf.get_variable('dist', initializer=np.ones(num_classes, dtype=np.float32), dtype=np.float32,trainable=False)
+        #    dist_update = dist.assign_add(tf.reduce_sum(labels, axis=-1).reshape([-1]))
+        #    #dist_update = dist.assign_add(tf.bincount(label_tensor, minlength=num_classes))
+        #    class_weights = (1.0/dist_update)
+        #    class_weights = num_classes * class_weights / tf.reduce_sum(class_weights)
+        #    tf.summary.histogram('dist', dist)
 
-    #with tf.variable_scope('dist_scope', reuse=reuse) as scope:
-    #    dist = tf.get_variable('dist', initializer=np.ones(num_classes, dtype=np.float32), dtype=np.float32,trainable=False)
-    #    dist_update = dist.assign_add(tf.reduce_sum(labels, axis=-1).reshape([-1]))
-    #    #dist_update = dist.assign_add(tf.bincount(label_tensor, minlength=num_classes))
-    #    class_weights = (1.0/dist_update)
-    #    class_weights = num_classes * class_weights / tf.reduce_sum(class_weights)
-    #    tf.summary.histogram('dist', dist)
+        #labels = tf.one_hot(tf.cast(label_tensor, tf.uint8), depth=num_classes, axis=-1)
+        labels = label_tensor #(b, n, h, c)
+        pred = tf.nn.softmax(logits, -1)
 
-    #labels = tf.one_hot(tf.cast(label_tensor, tf.uint8), depth=num_classes, axis=-1)
-    labels = label_tensor #(b, n, h, c)
-    pred = tf.nn.softmax(logits, -1)
+        label_pr = tf.cast(tf.argmax(pred, axis=-1), tf.int32) # --> it's okay to apply this before softmax
+        label_gt = tf.cast(tf.argmax(label_tensor, axis=-1), tf.int32)
 
-    label_pr = tf.cast(tf.argmax(pred, axis=-1), tf.int32) # --> it's okay to apply this before softmax
-    label_gt = tf.cast(tf.argmax(label_tensor, axis=-1), tf.int32)
+        #acc = tf.reduce_mean(tf.cast(tf.equal(pred_label, label_tensor), tf.float32))
 
-    #acc = tf.reduce_mean(tf.cast(tf.equal(pred_label, label_tensor), tf.float32))
+        obj_mask_gt = tf.greater(tf.reduce_max(label_tensor, axis=-1), 0.25) # high confidence for object presence
+        obj_mask_pr = tf.greater(tf.reduce_max(pred, axis=-1),         0.25)
 
-    obj_mask_gt = tf.greater(tf.reduce_max(label_tensor, axis=-1), 0.25) # high confidence for object presence
-    obj_mask_pr = tf.greater(tf.reduce_max(pred, axis=-1),         0.25)
+        obj_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=tf.cast(obj_mask_pr,tf.float32), labels=tf.cast(obj_mask_gt,tf.float32)))
 
-    obj_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=tf.cast(obj_mask_pr,tf.float32), labels=tf.cast(obj_mask_gt,tf.float32)))
+        clf_idx = tf.where(obj_mask_gt)
+        clf_loss = tf.reduce_mean(tf.gather_nd(tf.nn.softmax_cross_entropy_with_logits(logits = logits, labels = labels), clf_idx))
 
-    clf_idx = tf.where(obj_mask_gt)
-    clf_loss = tf.reduce_mean(tf.gather_nd(tf.nn.softmax_cross_entropy_with_logits(logits = logits, labels = labels), clf_idx))
+        acc = tf.reduce_mean(tf.cast(tf.where(obj_mask_gt, tf.equal(label_pr, label_gt), tf.equal(obj_mask_gt, obj_mask_pr)), tf.float32))
 
-    acc = tf.reduce_mean(tf.cast(tf.where(obj_mask_gt, tf.equal(label_pr, label_gt), tf.equal(obj_mask_gt, obj_mask_pr)), tf.float32))
+        loss = obj_loss + clf_loss # alpha factor??
 
-    loss = obj_loss + clf_loss # alpha factor??
+        #loss = tf.nn.softmax_cross_entropy_with_logits(labels = labels, logits = logits * class_weights)
+        #loss = tf.reduce_mean(loss)
 
-    #loss = tf.nn.softmax_cross_entropy_with_logits(labels = labels, logits = logits * class_weights)
-    #loss = tf.reduce_mean(loss)
-
-    with tf.name_scope('evaluation'):
-        tf.summary.scalar('loss', loss)
-        tf.summary.scalar('accuracy', acc)
+        with tf.name_scope('evaluation'):
+            tf.summary.scalar('loss', loss)
+            tf.summary.scalar('accuracy', acc)
 
     return {
             'pred' : tf.identity(pred, name='predictions'),

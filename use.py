@@ -192,7 +192,7 @@ def main(argv):
           i = 0
           for sub in os.listdir(FLAGS.image):
               i += 1
-              if i < 100:
+              if i < 300:
                   continue;
               image_path = os.path.join(FLAGS.image, sub)
               if not run(image_path):
