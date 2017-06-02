@@ -25,9 +25,9 @@ slim = tf.contrib.slim
 input_ckpt_path = './data/model.ckpt-906808'
 bottleneck_name = 'MobileNet/conv_ds_14/pw_batch_norm/Relu:0'
 
-output_graph_path = '/tmp/output_graph.pb'
-output_labels_path = '/tmp/labels.txt'
-output_ckpt_path = '/tmp/model.ckpt'
+output_graph_path = 'data/train/output_graph.pb'
+output_labels_path = 'data/train/labels.txt'
+output_ckpt_path = 'data/train/model.ckpt'
 
 loader = VOCLoader(os.getenv('VOC_ROOT'))
 

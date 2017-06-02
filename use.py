@@ -31,12 +31,12 @@ parser.add_argument(
     '--graph',
     required=True,
     type=str,
-    default='/tmp/output_graph.pb',
+    default='data/output_graph.pb',
     help='Absolute path to graph file (.pb)')
 parser.add_argument(
     '--labels',
     required=True,
-    default='/tmp/labels.txt',
+    default='data/labels.txt',
     type=str,
     help='Absolute path to labels file (.txt)')
 parser.add_argument(
