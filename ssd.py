@@ -58,8 +58,8 @@ def calc_offsets(src, dst):
 
     dy = 0.5 * ((d_y1+d_y2)-(s_y1+s_y2))
     dx = 0.5 * ((d_x1+d_x2)-(s_x1+s_x2))
-    dh = np.log((d_y2 - d_y1) / (eps + s_y2 - s_y1)) # adding small value to prevent instability, just in case
-    dw = np.log((d_x2 - d_x1) / (eps + s_x2 - s_x1))
+    dh = np.sqrt((d_y2 - d_y1) / (eps + s_y2 - s_y1)) # adding small value to prevent instability, just in case
+    dw = np.sqrt((d_x2 - d_x1) / (eps + s_x2 - s_x1))
     return dy,dx,dh,dw
 
 def create_label(gt_boxes, gt_labels, l_d_boxes, n_classes):
@@ -74,21 +74,39 @@ def create_label(gt_boxes, gt_labels, l_d_boxes, n_classes):
     # ...     result[i,j,k,:4] = calc_offsets(d_box, gt_box)
     #         result[i,j,k,4] = updated_iou
     #         result[i,j,k,5] = gt_box[4]
+
     l_label = []
     for d_boxes in l_d_boxes:
         h,w,n = d_boxes.shape[:3]
         label = np.zeros((h,w,n,4+n_classes))
 
-        for i in range(h):
-            for j in range(w):
-                for k in range(n):
-                    for gt_box, gt_label in zip(gt_boxes, gt_labels):
+        for gt_box, gt_label in zip(gt_boxes, gt_labels): # loop over ground truths
+            top = 0.0
+            top_idx = (0,0,0)
+            top_offsets = (0,0,0,0)
+
+            for i in range(h):
+                for j in range(w):
+                    for k in range(n): # k = default box idx, loop over default boxes
                         d_box = d_boxes[i,j,k]
                         iou = jaccard(d_box, gt_box)
-                        if iou > label[i,j,k,4]:
-                            label[i,j,k,:4] = calc_offsets(d_box, gt_box) # localization offsets
+                        offsets = calc_offsets(d_box, gt_box)
+
+                        if iou > top: # best match
+                            top = iou
+                            top_idx = (i,j,k)
+                            top_offsets = offsets
+
+                        if iou > 0.5: # good match
                             cls_idx = 4 + gt_label 
-                            label[i,j,k,cls_idx] += iou # overlap score
+                            label[i,j,k,cls_idx] = 1.0
+                            label[i,j,k,:4] = offsets # localization offsets
+
+            if top < 0.5: # no good match, match at least one
+                i,j,k = top_idx
+                label[i,j,k] = 1.0
+                label[i,j,k,:4] = top_offsets
+
         l_label.append(label)
 
     return l_label
@@ -102,7 +120,7 @@ def smooth_l1(x):
 
     return tf.reduce_mean(re, axis=-1)
 
-def pred(output_tensors, df_boxes, num_classes, num_boxes, max_output_size=100, iou_threshold=0.5): # --> NOT per tensor
+def pred(output_tensors, df_boxes, num_classes, num_boxes, max_output_size=200, iou_threshold=0.5): # --> NOT per tensor
 
     s_boxes = []
     s_cls = []
@@ -126,7 +144,8 @@ def pred(output_tensors, df_boxes, num_classes, num_boxes, max_output_size=100, 
 
         dy,dx,dh,dw = tf.unstack(out_box, axis=-1)
 
-        dh,dw = tf.exp(dh), tf.exp(dw)
+        dh,dw = dh*dh, dw*dw # undo the sqrt
+
         cx,cy = (x1+x2)/2, (y1+y2)/2
         w,h = (x2-x1), (y2-y1)
 
@@ -148,9 +167,11 @@ def pred(output_tensors, df_boxes, num_classes, num_boxes, max_output_size=100, 
     idx = tf.image.non_max_suppression(s_boxes, s_val, max_output_size = max_output_size, iou_threshold=iou_threshold)
     return tf.gather(s_boxes, idx), tf.gather(s_cls, idx), tf.gather(s_val, idx)
 
-def eval(output, target, num_classes, pos_neg_ratio=3.0, alpha = 0.03, conf_thresh = 0.3): # --> per tensor
+def eval(output, target, num_classes, pos_neg_ratio=3.0, alpha = 0.03, conf_thresh = 0.5): # --> per tensor
     # output = [b*h*w*n, 4 + num_classes] ???
     # target = [b*h*w*n, 4 + num_classes] ???
+
+    batch_size = tf.shape(output)[0]
 
     y_loc, y_cls = tf.split(output, [4, num_classes], axis=4) # TODO : -1 may not work?
     t_loc, t_cls = tf.split(target, [4, num_classes], axis=4)
@@ -159,7 +180,7 @@ def eval(output, target, num_classes, pos_neg_ratio=3.0, alpha = 0.03, conf_thre
     t_pred = tf.argmax(t_cls, -1)
 
     y_conf = tf.reduce_max(y_cls, -1)
-    t_conf = tf.reduce_max(t_cls, -1)
+    t_conf = tf.reduce_max(t_cls, -1) # still per-box
 
     ### POSITIVE (Object Exists)
     p_mask = (t_conf > conf_thresh) # == i.e. object found at location
@@ -172,12 +193,12 @@ def eval(output, target, num_classes, pos_neg_ratio=3.0, alpha = 0.03, conf_thre
     n_neg = tf.reduce_sum(n_mask_f)
     disparity = tf.abs(tf.reduce_max(tf.subtract(t_cls, y_cls),-1) * n_mask_f) # maximum disagreement
 
-    k = tf.cast(tf.minimum(64 + n_pos * pos_neg_ratio, n_neg), tf.int32)
+    k = tf.cast(tf.minimum(n_pos * pos_neg_ratio + tf.cast(batch_size, tf.float32), n_neg), tf.int32)
 
-    with tf.name_scope('counts'):
-        tf.summary.scalar('n_pos', n_pos)
-        tf.summary.scalar('n_neg', n_neg)
-        tf.summary.scalar('k', k)
+    #with tf.name_scope('counts'):
+    #    tf.summary.scalar('n_pos', n_pos)
+    #    tf.summary.scalar('n_neg', n_neg)
+    #    tf.summary.scalar('k', k)
 
     neg_val, neg_idx = tf.nn.top_k(tf.reshape(disparity, [-1]), k = k)
     n_mask = tf.logical_and(n_mask, disparity > neg_val[-1]) # final negative mask?
@@ -200,10 +221,13 @@ def eval(output, target, num_classes, pos_neg_ratio=3.0, alpha = 0.03, conf_thre
         loc_loss = tf.reduce_mean(loc_loss)
         tf.summary.scalar('loc', loc_loss)
 
-    #obj_acc = tf.equal(y_pred, t_pred)
-    #clf_acc = tf.equal(n_mask, (y_conf < conf_thresh))
+    #acc_mask = tf.where(p_mask, tf.equal(y_pred, t_pred), tf.equal(n_mask, (y_conf < conf_thresh)))
+    acc_mask = tf.where(p_mask, tf.equal(y_pred, t_pred), y_conf < conf_thresh)
+    #acc_mask = tf.logical_or(
+    #        tf.logical_and(p_mask, tf.equal(y_pred,t_pred) ), # when positive, look at class prediction
+    #        tf.logical_and(n_mask, y_conf < conf_thresh    )  # when negative, look at presence prediction
+    #        )
 
-    acc_mask = tf.where(p_mask, tf.equal(y_pred, t_pred), tf.equal(n_mask, (y_conf < conf_thresh)))
     acc = tf.reduce_mean(tf.cast(acc_mask, tf.float32))
 
     return (pos_loss + neg_loss + loc_loss), acc

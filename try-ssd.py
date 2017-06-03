@@ -222,8 +222,6 @@ def extended_ops(input_tensor, label_tensor, num_classes, is_training=True, reus
 
 def get_or_create_bottlenecks(sess, bottleneck_tensor, image, loader, anns, df_boxes, batch_size):
 
-    _, h, w, d = bottleneck_tensor.get_shape().as_list()
-
     all = (batch_size <= 0)
 
     if not all:

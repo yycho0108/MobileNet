@@ -163,12 +163,13 @@ def main(argv):
               box, cls, val = run_graph(sess,image_data, labels, FLAGS.input_layer, ['pred_box:0', 'pred_cls:0', 'pred_val:0'],
                         FLAGS.num_top_predictions)
 
+          num_box = min(10, len(box))
           frame = cv2.imread(image_path)
           h,w,_ = frame.shape
           lab_frame = np.zeros((7,7,3), dtype=np.uint8)
 
-          print val
-          drawn = sess.run(tf.image.draw_bounding_boxes(np.expand_dims(frame,0), np.expand_dims(box,0)))[0]
+          print [labels[c] for c in cls[:num_box]]
+          drawn = sess.run(tf.image.draw_bounding_boxes(np.expand_dims(frame,0), np.expand_dims(box[:num_box],0)))[0]
 
           cv2.imshow('frame', frame)
           cv2.imshow('drawn', drawn)
