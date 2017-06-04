@@ -63,6 +63,7 @@ def calc_offsets(src, dst):
     return dy,dx,dh,dw
 
 def create_label(gt_boxes, gt_labels, l_d_boxes, n_classes):
+    ## --> static label, deprecated
     # gt_boxes = [n, 5] (bbox+class)
     # d_boxes = list([h,w,n,4])
     # result = list([h,w,n,4+n_classes])# --> per bottleneck tensor; each bottleneck tensor always gets constant dims
@@ -110,6 +111,66 @@ def create_label(gt_boxes, gt_labels, l_d_boxes, n_classes):
         l_label.append(label)
 
     return l_label
+
+#def overlap(a, b):
+#    a_y1,a_x1,a_y2,a_x2 = a
+#    b_y1,b_x1,b_y2,b_x2 = b
+#    return max(0, min(a_x2,b_x2) - max(a_x1,b_x1)) * max(0, min(a_y2,b_y2) - max(a_y1,b_y1))
+
+
+def create_label_tf(gt_boxes, output_tensor, n_classes, box_ratios):
+    # b = batch_size
+    # n = # gt boxes
+    # m = # default boxes
+    # h = height of output tensor
+    # w = width of output tensor
+
+    #gt_boxes : tensor of [b*n, 4]
+
+    #output_tensor : tensor of [b, h, w, m, 4 + n_classes], m = # boxes
+    # pr_boxes, pr_labels = tf.split(output_tensors, [4, n_classes], axis=-1)
+    # pr_boxes :  tensor of [b, h, w, m, 4]
+    # pr_labels : tensor of [b, h, w, m, n_classes]
+
+    d_box = tf.constant(np.reshape(default_box(output_tensor, box_ratios), (-1,4)), tf.float32)
+    gt_box = tf.reshape(gt_boxes, (-1,4))
+
+    lr = tf.maximum(
+            tf.minimum(gt_box[:,3,None], d_box[:,3]) -
+            tf.maximum(gt_box[:,1,None], d_box[:,1]),
+            0
+            )
+    tb = tf.maximum(
+            tf.minimum(gt_box[:,2,None], d_box[:,2]) -
+            tf.maximum(gt_box[:,0,None], d_box[:,0]),
+            0
+            )
+
+    ixn = tf.multiply(tb,lr) # intersection
+
+    unn = tf.subtract( # union
+            tf.multiply(d_box[:,3] - d_box[:,1], d_box[:,2] - d_box[:,0]) + # d_box areas
+            tf.multiply(gt_box[:,3,None] - gt_box[:,1,None], gt_box[:,2,None] - gt_box[:,0,None]), # gt_box areas
+            ixn
+            )
+
+    iou = tf.div(ixn,unn)
+    # (m,b*n). iou score for each default box.
+    best = tf.reduce_max(iou, axis=-1) # match best
+    best = tf.equal(iou, best)
+    good = tf.greater(iou, 0.5) # match good
+    sel = tf.logical_or(best, good)
+
+    ## offsets
+    dy1,dx1,dy2,dx2 = [tf.subtract(gt_box[:,i,None], d_box[:,i]) for i in range(4)]
+    dy = (dy1+dy2)/2
+    dx = (dx1+dx2)/2
+    dw = tf.div(gt_box[:,3,None] - gt_box[:,1,None], d_box[:,3] - d_box[:,1])
+    dh = tf.div(gt_box[:,2,None] - gt_box[:,0,None], d_box[:,2] - d_box[:,0])
+    
+    delta = tf.stack([dy,dx,dw,dh], axis=-1)
+    
+    return iou, sel, delta
 
 def smooth_l1(x):
     l2 = 0.5 * (x**2.0)

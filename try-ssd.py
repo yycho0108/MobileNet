@@ -184,7 +184,7 @@ def dwc(inputs, num_out, scope):
             scope=scope+'/pc')
     return pc
 
-def extended_ops(input_tensor, label_tensor, num_classes, is_training=True, reuse=None):
+def extended_ops(input_tensor, gt_box_tensor, gt_label_tensor, num_classes, is_training=True, reuse=None):
     with tf.name_scope('extended_ops') as sc:
         with slim.arg_scope([slim.conv2d, slim.separable_convolution2d],
                 activation_fn=tf.nn.relu,
@@ -203,7 +203,11 @@ def extended_ops(input_tensor, label_tensor, num_classes, is_training=True, reus
             logits = dwc(logits, num_boxes * (num_classes+4), scope='dwc_2')
             logits = tf.reshape(logits, (-1, h, w, num_boxes, 4+num_classes)) 
 
-            df_box = ssd.default_box(input_tensor, box_ratios)
+            output_tensors = []
+
+            for output_tensor in output_tensors:
+                # create corresponding labels
+                iou, sel, delta = ssd.create_label_tf(gt_boxes, output_tensor, num_classes, box_ratios)
 
             pred_box, pred_cls, pred_val = ssd.pred([logits], [df_box], num_classes=num_classes, num_boxes=num_boxes)
             loss, acc = ssd.eval(logits, label_tensor, num_classes = num_classes)
@@ -320,11 +324,12 @@ def main(_):
             ### DEFINE MODEL ###
             bottleneck_tensor = tf.stop_gradient(sess.graph.get_tensor_by_name(bottleneck_name))
             _, h, w, d = bottleneck_tensor.get_shape().as_list()
-            label_tensor = tf.placeholder(tf.float32, (None, h, w, num_boxes, 4+num_classes))
             input_tensor = tf.placeholder_with_default(bottleneck_tensor, shape=(None, h, w, d))
+            gt_boxes = tf.placeholder(tf.float32, (None, 4)) # ground truth boxes
+            gt_labels = tf.placeholder(tf.float32, (None, 1)) # ground truth labels
             is_training = tf.placeholder(tf.bool, [], name='is_training')
 
-            train = extended_ops(input_tensor, label_tensor, num_classes, is_training=is_training, reuse=None)
+            train = extended_ops(input_tensor, gt_boxes, gt_labels, num_classes, is_training=is_training, reuse=None)
             
             update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
             with tf.control_dependencies(update_ops):
@@ -359,6 +364,8 @@ def main(_):
             for i in range(train_iters):
 
                 btls, lbls = get_or_create_bottlenecks(sess, bottleneck_tensor, image, loader, anns_train, df_boxes, batch_size)
+                #box,lbl = ann2bbox(loader.grab_pair(anns_train[0])[1], categories)
+                ssd.create_label_tf(gt_boxes, bottleneck_tensor, num_classes, box_ratios)
 
                 s,_ = sess.run([merged, opt], feed_dict={input_tensor : btls, label_tensor: lbls, is_training : True})
                 train_writer.add_summary(s, i)
