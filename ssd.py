@@ -3,7 +3,7 @@ slim = tf.contrib.slim
 import numpy as np
 from utilities import variable_summaries
 
-def default_box(output_tensor, box_ratios, scale=1.0):
+def default_box(output_tensor, box_ratios, scale=1.0, wildcard=1.0):
     # output_tensor = [b,h,w,c]
     # box_ratios = [n]
     # y1,x1,y2,x2
@@ -11,6 +11,7 @@ def default_box(output_tensor, box_ratios, scale=1.0):
     box_ratios = map(lambda b : np.sqrt(b), box_ratios)
     box_ratios = map(lambda b : [1.0/b, b, 1.0/b, b], box_ratios)
     box_ratios = np.array(box_ratios)
+    box_ratios[0] *= wildcard
 
     s = output_tensor.get_shape().as_list()
     h,w = s[1], s[2]

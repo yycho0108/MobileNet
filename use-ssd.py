@@ -176,7 +176,7 @@ def main(argv):
           print [labels[c] for c in cls[:5]]
           print box[:0]
 
-          drawn = sess.run(tf.image.draw_bounding_boxes(np.expand_dims(frame,0), np.expand_dims(box[best_idx],0)))[0]
+          drawn = sess.run(tf.image.draw_bounding_boxes(np.expand_dims(frame,0), np.expand_dims(box[0:1],0)))[0]
 
           cv2.imshow('frame', frame)
           cv2.imshow('drawn', drawn)

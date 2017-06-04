@@ -63,8 +63,8 @@ tf.logging.set_verbosity(tf.logging.INFO)
 # SSD PARAMS #
 ##############
 
-box_ratios = [1.0, 2.0, 3.0, 1.0/2, 1.0/3]
-num_boxes = len(box_ratios) + 1 # account for wildcard box
+box_ratios = [1.0, 1.0, 2.0, 3.0, 1.0/2, 1.0/3]
+num_boxes = len(box_ratios)
 
 ##################
 
@@ -230,8 +230,9 @@ def extended_ops(input_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor,
 
             for i, logits in enumerate(output_tensors):
                 s_k = s(i)
-                s_kn = s(i+1)
-                d_box = np.reshape(ssd.default_box(logits, box_ratios + [np.sqrt(s_k*s_kn)], (-1,4))
+                s_kn = s(i+1) 
+                w = np.sqrt(s_kn/s_k)
+                d_box = np.reshape(ssd.default_box(logits, box_ratios, scale=s_k, wildcard=w), (-1,4))
                 iou, sel, cls, delta = ssd.create_label_tf(gt_box_tensor, gt_split_tensor, gt_label_tensor, d_box)
                 acc = ssd.train(logits, iou, sel, cls, delta, num_classes = num_classes)
                 d_boxes.append(d_box)
