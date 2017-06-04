@@ -164,8 +164,10 @@ def main(argv):
                         FLAGS.num_top_predictions)
 
           good_idx = (val > 0.75)
-          num = min(10, np.count_nonzero(good_idx))
+          num = max(1, min(10, np.count_nonzero(good_idx)))
           best_idx = np.argsort(val)[-num:]
+          print num
+          print len(best_idx)
 
           frame = cv2.imread(image_path)
           h,w,_ = frame.shape

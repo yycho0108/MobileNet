@@ -350,6 +350,7 @@ def train(output, iou, sel, cls, loc, num_classes, pos_neg_ratio=3.0, alpha = 10
         tf.losses.add_loss(loc_loss)
 
     acc_clf = tf.cast(tf.logical_and(tf.equal(tf.cast(y_pred, tf.int32), cls),p_mask), tf.float32)
+    acc_pos = tf.cast(tf.logical_and(p_mask, y_conf > conf_thresh), tf.float32)
     acc_obj = tf.cast(tf.equal(n_mask, y_conf < conf_thresh),  tf.float32)
 
     with tf.name_scope('counts'):
@@ -359,6 +360,7 @@ def train(output, iou, sel, cls, loc, num_classes, pos_neg_ratio=3.0, alpha = 10
 
     with tf.name_scope('debug_acc'):
         tf.summary.scalar('acc_clf', tf.reduce_sum(acc_clf) / n_pos)
+        tf.summary.scalar('acc_pos', tf.reduce_sum(acc_pos) / n_pos)
         tf.summary.scalar('acc_obj', tf.reduce_sum(acc_obj) / n_neg)
 
     acc_mask = tf.where(p_mask, acc_clf, acc_obj)

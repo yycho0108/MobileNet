@@ -54,7 +54,7 @@ MODEL_INPUT_DEPTH = 3
 
 train_iters = int(1e3)
 split_ratio = 0.85
-learning_rate = 1e-3
+learning_rate = 5e-4
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
@@ -64,7 +64,7 @@ tf.logging.set_verbosity(tf.logging.INFO)
 ##############
 
 box_ratios = [1.0, 2.0, 3.0, 1.0/2, 1.0/3]
-num_boxes = len(box_ratios)
+num_boxes = len(box_ratios) + 1 # account for wildcard box
 
 ##################
 
@@ -223,10 +223,15 @@ def extended_ops(input_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor,
 
             s_min = 0.15
             s_max = 0.9
+            scales = []
+
+            def s(i):
+                return s_min + (s_max - s_min) / (n-1) * (i)
 
             for i, logits in enumerate(output_tensors):
-                s_k = s_min + (s_max - s_min) / (n-1) * (i)
-                d_box = np.reshape(ssd.default_box(logits, box_ratios, scale=s_k), (-1,4))
+                s_k = s(i)
+                s_kn = s(i+1)
+                d_box = np.reshape(ssd.default_box(logits, box_ratios + [np.sqrt(s_k*s_kn)], (-1,4))
                 iou, sel, cls, delta = ssd.create_label_tf(gt_box_tensor, gt_split_tensor, gt_label_tensor, d_box)
                 acc = ssd.train(logits, iou, sel, cls, delta, num_classes = num_classes)
                 d_boxes.append(d_box)
