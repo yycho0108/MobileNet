@@ -1,19 +1,23 @@
 import tensorflow as tf
+slim = tf.contrib.slim
 import numpy as np
 from utilities import variable_summaries
 
-def default_box(output_tensor, box_ratios):
+def default_box(output_tensor, box_ratios, scale=1.0):
     # output_tensor = [b,h,w,c]
     # box_ratios = [n]
     # y1,x1,y2,x2
 
     box_ratios = map(lambda b : np.sqrt(b), box_ratios)
-    box_ratios = map(lambda b : [1./b, b, 1./b, b], box_ratios)
+    box_ratios = map(lambda b : [1.0/b, b, 1.0/b, b], box_ratios)
     box_ratios = np.array(box_ratios)
 
     s = output_tensor.get_shape().as_list()
     h,w = s[1], s[2]
-    ch,cw = 1./h, 1./w # cell width
+
+    #ch,cw = 1./h, 1./w # cell width
+    ch,cw = scale, scale
+
     one_cell = np.atleast_2d([-ch/2,-cw/2,ch/2,cw/2]) # dims of one cell
 
     cell_box_dims = box_ratios * one_cell #(nx4)
@@ -21,8 +25,8 @@ def default_box(output_tensor, box_ratios):
 
     grid_box_locs = np.asarray(
             np.meshgrid(
-                np.multiply(ch, range(h)),
-                np.multiply(cw, range(w)),
+                np.multiply(1./h, range(h)),
+                np.multiply(1./w, range(w)),
                 indexing='xy'
                 )
             ).T
@@ -117,8 +121,10 @@ def create_label(gt_boxes, gt_labels, l_d_boxes, n_classes):
 #    b_y1,b_x1,b_y2,b_x2 = b
 #    return max(0, min(a_x2,b_x2) - max(a_x1,b_x1)) * max(0, min(a_y2,b_y2) - max(a_y1,b_y1))
 
+def gather_axis(params, indices, axis=0):
+    return tf.stack(tf.unstack(tf.gather(tf.unstack(params, axis=axis), indices)), axis=axis)
 
-def create_label_tf(gt_boxes, output_tensor, n_classes, box_ratios):
+def create_label_tf(gt_boxes, gt_split_tensor, gt_label_tensor, d_box):
     # b = batch_size
     # n = # gt boxes
     # m = # default boxes
@@ -132,45 +138,94 @@ def create_label_tf(gt_boxes, output_tensor, n_classes, box_ratios):
     # pr_boxes :  tensor of [b, h, w, m, 4]
     # pr_labels : tensor of [b, h, w, m, n_classes]
 
-    d_box = tf.constant(np.reshape(default_box(output_tensor, box_ratios), (-1,4)), tf.float32)
-    gt_box = tf.reshape(gt_boxes, (-1,4))
+    #print 'c0', np.sum((d_box[:,2] - d_box[:,0]) == 0)
+    #print 'c1', np.sum((d_box[:,3] - d_box[:,1]) == 0)
+
+    d_box = tf.constant(d_box, tf.float32)#np.reshape(default_box(output_tensor, box_ratios), (-1,4)), tf.float32)
 
     lr = tf.maximum(
-            tf.minimum(gt_box[:,3,None], d_box[:,3]) -
-            tf.maximum(gt_box[:,1,None], d_box[:,1]),
+            tf.minimum(gt_boxes[:,3], d_box[:,3,None]) -
+            tf.maximum(gt_boxes[:,1], d_box[:,1,None]),
             0
             )
+            
     tb = tf.maximum(
-            tf.minimum(gt_box[:,2,None], d_box[:,2]) -
-            tf.maximum(gt_box[:,0,None], d_box[:,0]),
+            tf.minimum(gt_boxes[:,2], d_box[:,2,None]) -
+            tf.maximum(gt_boxes[:,0], d_box[:,0,None]),
             0
             )
 
     ixn = tf.multiply(tb,lr) # intersection
 
     unn = tf.subtract( # union
-            tf.multiply(d_box[:,3] - d_box[:,1], d_box[:,2] - d_box[:,0]) + # d_box areas
-            tf.multiply(gt_box[:,3,None] - gt_box[:,1,None], gt_box[:,2,None] - gt_box[:,0,None]), # gt_box areas
+            tf.multiply(d_box[:,3,None] - d_box[:,1,None], d_box[:,2,None] - d_box[:,0,None]) + # d_box areas
+            tf.multiply(gt_boxes[:,3] - gt_boxes[:,1], gt_boxes[:,2] - gt_boxes[:,0]), # gt_box areas
             ixn
             )
 
-    iou = tf.div(ixn,unn)
-    # (m,b*n). iou score for each default box.
-    best = tf.reduce_max(iou, axis=-1) # match best
-    best = tf.equal(iou, best)
-    good = tf.greater(iou, 0.5) # match good
-    sel = tf.logical_or(best, good)
+    iou = tf.div(ixn,unn) # (m, b*n)
+
+    # (b*n, m). iou score for each default box AGAINST GT BOXES ... which is undesirable
+    # TODO maybe assert sum(gt_split_tensor) == iou.shape[0]
+
+    iou = tf.split(iou, gt_split_tensor, axis=1) # split by gt boxes, -->  b[(m,n)]
+    gt_label_tensor = tf.split(gt_label_tensor, gt_split_tensor, axis=0) # --> b[(n)]
+
+    ## --> each gt_label_tensor would be (n,)
+    #print 'gs', gt_label_tensor.shape
+    #print 'is', tf.argmax(iou, axis=-1).shape
+
+    #cls = tf.map_fn(lambda (g,i) : tf.gather(g,i), [gt_label_tensor, tf.argmax(iou,axis=-1)], dtype=tf.int32)
+    #print 'cs', cls.shape
+
+    gt_sel_idx = [tf.argmax(i, axis=-1) for i in iou] # == which gt box to match, per batch
+
+    cls = [tf.gather(g,s) for (g,s) in zip(gt_label_tensor, gt_sel_idx)]
+    cls = tf.stack(cls, axis=0)
+
+    # --> (batch_size, num_dbox)
+    ## cls labels should look like [b, m] where each default box is matched to one category
+
+    ## select all default boxes that is in good standing with ground truth box
+    # iou = b[(m,n)] ... 
+    #print 'gs', gt_label_tensor.shape
+    #print 'is', tf.argmax(iou, axis=-1).shape
+
+    #cls2 = tf.gather_nd(gt_label_tensor, tf.argmax(iou, axis=-1))
+    #print 'cs', cls2.shape
+
+    iou = tf.stack([tf.reduce_max(i, axis=-1) for i in iou],axis=0)
+    #iou = tf.reduce_max(iou, axis=-1) # b[(m)] best iou among gt boxes
+
+    best = tf.reduce_max(iou, axis=-1) # match best iou
+    best = tf.equal(iou, best[:,None]) #b[(m,n)] TODO: warning : maybe fix with almost_equal?
+    good = tf.greater(iou, 0.5)
+    sel = tf.logical_or(best, good) # selected ones among default boxes!
 
     ## offsets
-    dy1,dx1,dy2,dx2 = [tf.subtract(gt_box[:,i,None], d_box[:,i]) for i in range(4)]
+    gt_boxes = tf.split(gt_boxes, gt_split_tensor, axis=0)
+    gt_boxes = [tf.gather(g,s) for (g,s) in zip(gt_boxes, gt_sel_idx)]
+    gt_boxes = tf.stack(gt_boxes, axis=0) # should be [64,?]
+
+    # gt_boxes == [64,294,4]
+    # d_box == [294,4]
+
+    delta = tf.subtract(gt_boxes, d_box[None,:,:])
+
+    dy1, dx1, dy2, dx2 = tf.unstack(delta, axis=-1)
+
     dy = (dy1+dy2)/2
     dx = (dx1+dx2)/2
-    dw = tf.div(gt_box[:,3,None] - gt_box[:,1,None], d_box[:,3] - d_box[:,1])
-    dh = tf.div(gt_box[:,2,None] - gt_box[:,0,None], d_box[:,2] - d_box[:,0])
+    #dw = (dx2-dx1) # TODO _ FIX?
+    #dh = (dy2-dy1)
+    a0 = tf.assert_greater(d_box[:,3] - d_box[:,1], 0.0)
+    a1 = tf.assert_greater(d_box[:,2] - d_box[:,0], 0.0)
+    with tf.control_dependencies([a0,a1]):
+        dw = tf.log(tf.div(gt_boxes[:,:,3] - gt_boxes[:,:,1], d_box[None,:,3] - d_box[None,:,1]))
+        dh = tf.log(tf.div(gt_boxes[:,:,2] - gt_boxes[:,:,0], d_box[None,:,2] - d_box[None,:,0]))
     
-    delta = tf.stack([dy,dx,dw,dh], axis=-1)
-    
-    return iou, sel, delta
+    loc = tf.stack([dy,dx,dw,dh], axis=-1)
+    return tf.stack(iou, axis=0),  sel, cls, loc 
 
 def smooth_l1(x):
     l2 = 0.5 * (x**2.0)
@@ -205,13 +260,13 @@ def pred(output_tensors, df_boxes, num_classes, num_boxes, max_output_size=200, 
 
         dy,dx,dh,dw = tf.unstack(out_box, axis=-1)
 
-        dh,dw = dh*dh, dw*dw # undo the sqrt
+        dh,dw = tf.exp(dh), tf.exp(dw) # undo the sqrt
 
         cx,cy = (x1+x2)/2, (y1+y2)/2
         w,h = (x2-x1), (y2-y1)
 
         x,y = cx+dx, cy+dy
-        w,h = w*dw, h*dw
+        w,h = w * dw, h * dw
         y1,x1,y2,x2 = (y-h/2),(x-w/2),(y+h/2),(x+w/2)
 
         out_box = tf.reshape(tf.stack([y1,x1,y2,x2], axis=-1), (-1,4))
@@ -220,31 +275,41 @@ def pred(output_tensors, df_boxes, num_classes, num_boxes, max_output_size=200, 
         s_cls.append(pred_cls)
         s_val.append(pred_val)
 
-    s_boxes = tf.concat(s_boxes, -1)
-    s_cls = tf.concat(s_cls, -1)
-    s_val = tf.concat(s_val, -1)
+    s_boxes = tf.concat(s_boxes, axis=0)
+    s_cls = tf.concat(s_cls, 0)
+    s_val = tf.concat(s_val, 0)
 
     #with tf.control_dependencies([tf.assert_equal(tf.shape(s_boxes)[0], tf.shape(s_cls)[0])]):
     idx = tf.image.non_max_suppression(s_boxes, s_val, max_output_size = max_output_size, iou_threshold=iou_threshold)
     return tf.gather(s_boxes, idx), tf.gather(s_cls, idx), tf.gather(s_val, idx)
 
-def eval(output, target, num_classes, pos_neg_ratio=3.0, alpha = 0.03, conf_thresh = 0.5): # --> per tensor
-    # output = [b*h*w*n, 4 + num_classes] ???
-    # target = [b*h*w*n, 4 + num_classes] ???
+def train(output, iou, sel, cls, loc, num_classes, pos_neg_ratio=3.0, alpha = 100.0, conf_thresh = 0.5): # --> per tensor
+    # output should be something like
+    # [b, m, 4 + num_classes]
+    # each default box gets matched to best gt box?
+    cls_o = tf.one_hot(cls, depth=num_classes) # (64,294,20)
+    # sel = [b, m], m = (h*w*num_bbox) -- encodes which default box was selected
+    # loc= [b, m, 4]
 
-    batch_size = tf.shape(output)[0]
+    #print 'is', iou.shape   # (b, m])
+    #print 'ss', sel.shape   # (b, m])
+    #print 'cs', cls.shape   # (b, m, 20])
+    #print 'ds', loc.shape # (b, m, 4 ])
 
-    y_loc, y_cls = tf.split(output, [4, num_classes], axis=4) # TODO : -1 may not work?
-    t_loc, t_cls = tf.split(target, [4, num_classes], axis=4)
+    batch_size = iou.shape.as_list()[0] # TODO: currently not dynamic
 
-    y_pred = tf.argmax(y_cls, -1)
-    t_pred = tf.argmax(t_cls, -1)
+    output = tf.reshape(output, [batch_size, -1, 4+num_classes]) #
+    #print 'os', output.shape # [b, m, 24]
 
-    y_conf = tf.reduce_max(y_cls, -1)
-    t_conf = tf.reduce_max(t_cls, -1) # still per-box
+    y_loc, y_cls = tf.split(output, [4, num_classes], axis=2) # TODO : -1 may not work?
+    # y_loc= [bs, m, 4]
+    # y_cls = [bs, m, 20]
+
+    y_pred = tf.argmax(y_cls, -1)# class prediction per default box, [bs, m]
+    y_conf = tf.reduce_max(tf.nn.softmax(y_cls), -1)# prediction confidence per default box, [bs, m]
 
     ### POSITIVE (Object Exists)
-    p_mask = (t_conf > conf_thresh) # == i.e. object found at location
+    p_mask = (iou > conf_thresh) # == i.e. object found at default box, [bs, m]
     p_mask_f = tf.cast(p_mask, tf.float32)
     n_pos = tf.reduce_sum(p_mask_f)
 
@@ -252,46 +317,54 @@ def eval(output, target, num_classes, pos_neg_ratio=3.0, alpha = 0.03, conf_thre
     n_mask = tf.logical_not(p_mask)#, t_cls > -0.5)
     n_mask_f = tf.cast(n_mask, tf.float32)
     n_neg = tf.reduce_sum(n_mask_f)
-    disparity = tf.abs(tf.reduce_max(tf.subtract(t_cls, y_cls),-1) * n_mask_f) # maximum disagreement
+
+    disparity = tf.abs(tf.subtract(iou, y_conf)) * n_mask_f # maximum disagreement!
 
     k = tf.cast(tf.minimum(n_pos * pos_neg_ratio + tf.cast(batch_size, tf.float32), n_neg), tf.int32)
 
-    #with tf.name_scope('counts'):
-    #    tf.summary.scalar('n_pos', n_pos)
-    #    tf.summary.scalar('n_neg', n_neg)
-    #    tf.summary.scalar('k', k)
-
     neg_val, neg_idx = tf.nn.top_k(tf.reshape(disparity, [-1]), k = k)
-    n_mask = tf.logical_and(n_mask, disparity > neg_val[-1]) # final negative mask?
-    n_mask_f = tf.cast(n_mask, tf.float32)
+    sub_n_mask = tf.logical_and(n_mask, disparity > neg_val[-1]) # final negative mask
+    sub_n_mask_f = tf.cast(sub_n_mask, tf.float32)
 
     ### COLLECT LOSSES ###
-    pos_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=y_cls, labels=t_pred) * p_mask_f
-    neg_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=y_cls, labels=tf.cast(p_mask, tf.int32)) * n_mask_f
+    pos_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=y_cls, labels=cls) * p_mask_f
 
-    loc_loss = smooth_l1(y_loc - t_loc) * p_mask_f
+    neg_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=y_cls, labels=cls) * sub_n_mask_f
+    #neg_logits = tf.one_hot(tf.cast(y_conf < conf_thresh,tf.int32), 2)
+    #neg_labels = tf.cast(n_mask, tf.int32)
+    #neg_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=neg_logits, labels=neg_labels) * n_mask_f
+
+    loc_loss = alpha * smooth_l1(y_loc - loc) * p_mask_f
+    #loc_loss = tf.nn.l2_loss(y_loc - loc) * p_mask_f
     #loc_loss = alpha * tf.nn.l2_loss(y_loc - t_loc) * p_mask_f
 
     with tf.name_scope('losses'):
-        pos_loss = tf.reduce_mean(pos_loss)
+        pos_loss = tf.where(n_pos>0, tf.reduce_sum(pos_loss)/(batch_size), 0)
         tf.summary.scalar('pos', pos_loss)
-
-        neg_loss = tf.reduce_mean(neg_loss)
+        tf.losses.add_loss(pos_loss)
+        neg_loss = tf.where(k>0, tf.reduce_sum(neg_loss)/tf.cast(batch_size,tf.float32), 0)
         tf.summary.scalar('neg', neg_loss)
-
-        loc_loss = tf.reduce_mean(loc_loss)
+        tf.losses.add_loss(neg_loss)
+        loc_loss = tf.where(n_pos>0, tf.reduce_sum(loc_loss)/(batch_size), 0)
         tf.summary.scalar('loc', loc_loss)
+        tf.losses.add_loss(loc_loss)
 
-    #acc_mask = tf.where(p_mask, tf.equal(y_pred, t_pred), tf.equal(n_mask, (y_conf < conf_thresh)))
-    acc_mask = tf.where(p_mask, tf.equal(y_pred, t_pred), y_conf < conf_thresh)
-    #acc_mask = tf.logical_or(
-    #        tf.logical_and(p_mask, tf.equal(y_pred,t_pred) ), # when positive, look at class prediction
-    #        tf.logical_and(n_mask, y_conf < conf_thresh    )  # when negative, look at presence prediction
-    #        )
+    acc_clf = tf.cast(tf.logical_and(tf.equal(tf.cast(y_pred, tf.int32), cls),p_mask), tf.float32)
+    acc_obj = tf.cast(tf.equal(n_mask, y_conf < conf_thresh),  tf.float32)
 
+    with tf.name_scope('counts'):
+        tf.summary.scalar('n_pos', n_pos)
+        tf.summary.scalar('n_neg', n_neg)
+        tf.summary.scalar('k', k)
+
+    with tf.name_scope('debug_acc'):
+        tf.summary.scalar('acc_clf', tf.reduce_sum(acc_clf) / n_pos)
+        tf.summary.scalar('acc_obj', tf.reduce_sum(acc_obj) / n_neg)
+
+    acc_mask = tf.where(p_mask, acc_clf, acc_obj)
     acc = tf.reduce_mean(tf.cast(acc_mask, tf.float32))
 
-    return (pos_loss + neg_loss + loc_loss), acc
+    return acc
 
 if __name__ == "__main__":
 

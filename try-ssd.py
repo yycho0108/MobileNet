@@ -26,8 +26,9 @@ slim = tf.contrib.slim
 #################
 #   PARAMETERS  #
 #################
-input_ckpt_path = './data/model.ckpt-906808'
-bottleneck_name = 'MobileNet/conv_ds_14/pw_batch_norm/Relu:0'
+#input_ckpt_path = './data/model.ckpt-906808'
+input_ckpt_path = 'data/train/model.ckpt'
+#bottleneck_name = 'MobileNet/conv_ds_14/pw_batch_norm/Relu:0'
 
 output_graph_path = 'data/train/output_graph.pb'
 output_labels_path = 'data/train/labels.txt'
@@ -51,9 +52,9 @@ MODEL_INPUT_WIDTH = 224
 MODEL_INPUT_HEIGHT = 224
 MODEL_INPUT_DEPTH = 3
 
-train_iters = 4000
+train_iters = int(1e3)
 split_ratio = 0.85
-learning_rate = 1e-4
+learning_rate = 1e-3
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
@@ -62,7 +63,7 @@ tf.logging.set_verbosity(tf.logging.INFO)
 # SSD PARAMS #
 ##############
 
-box_ratios = [1.0, 1.0, 2.0, 3.0, 1.0/2, 1.0/3]
+box_ratios = [1.0, 2.0, 3.0, 1.0/2, 1.0/3]
 num_boxes = len(box_ratios)
 
 ##################
@@ -171,10 +172,10 @@ def ann2bbox(ann, categories):
 
     return np.asarray(bbox, dtype=np.float32), np.asarray(labels, dtype=np.int32)
 
-def dwc(inputs, num_out, scope):
+def dwc(inputs, num_out, scope, stride=1):
     dc = slim.separable_conv2d(inputs,
             num_outputs=None,
-            stride=1,
+            stride=stride,
             depth_multiplier=1,
             kernel_size=[3, 3],
             scope=scope+'/dc')
@@ -184,7 +185,7 @@ def dwc(inputs, num_out, scope):
             scope=scope+'/pc')
     return pc
 
-def extended_ops(input_tensor, gt_box_tensor, gt_label_tensor, num_classes, is_training=True, reuse=None):
+def extended_ops(input_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor, num_classes, is_training=True, reuse=None):
     with tf.name_scope('extended_ops') as sc:
         with slim.arg_scope([slim.conv2d, slim.separable_convolution2d],
                 activation_fn=tf.nn.relu,
@@ -198,41 +199,62 @@ def extended_ops(input_tensor, gt_box_tensor, gt_label_tensor, num_classes, is_t
                     }
                 ):
 
-            _, h, w, d = input_tensor.get_shape().as_list()
-            logits = dwc(input_tensor, 256, scope='dwc_1')
-            logits = dwc(logits, num_boxes * (num_classes+4), scope='dwc_2')
-            logits = tf.reshape(logits, (-1, h, w, num_boxes, 4+num_classes)) 
+            input_tensors = list(input_tensors) # copy list
 
+            # extra features
+            for i in range(3):
+                logits = dwc(input_tensors[-1], 128, scope='f_dwc_%d_1' % i, stride=2)
+                input_tensors.append(logits)
+
+            # bbox predictions
             output_tensors = []
+            for i, t in enumerate(input_tensors):
+                h,w = t.get_shape().as_list()[1:3]
+                #logits = slim.conv2d(t, num_boxes * (num_classes+4), kernel_size=[3,3])
+                logits = dwc(t, 256, scope='b_dwc_%d_1' % i)
+                logits = dwc(logits, num_boxes * (num_classes+4), scope='b_dwc_%d_2' % i)
+                logits = tf.reshape(logits, (-1, h, w, num_boxes, 4+num_classes)) 
+                output_tensors.append(logits)
 
-            for output_tensor in output_tensors:
-                # create corresponding labels
-                iou, sel, delta = ssd.create_label_tf(gt_boxes, output_tensor, num_classes, box_ratios)
+            d_boxes = []
+            net_acc = []
 
-            pred_box, pred_cls, pred_val = ssd.pred([logits], [df_box], num_classes=num_classes, num_boxes=num_boxes)
-            loss, acc = ssd.eval(logits, label_tensor, num_classes = num_classes)
+            n = len(output_tensors)
 
-        with tf.name_scope('evaluation'):
-            tf.summary.scalar('loss', loss)
-            tf.summary.scalar('accuracy', acc)
+            s_min = 0.15
+            s_max = 0.9
+
+            for i, logits in enumerate(output_tensors):
+                s_k = s_min + (s_max - s_min) / (n-1) * (i)
+                d_box = np.reshape(ssd.default_box(logits, box_ratios, scale=s_k), (-1,4))
+                iou, sel, cls, delta = ssd.create_label_tf(gt_box_tensor, gt_split_tensor, gt_label_tensor, d_box)
+                acc = ssd.train(logits, iou, sel, cls, delta, num_classes = num_classes)
+                d_boxes.append(d_box)
+                net_acc.append(acc)
+
+            acc = tf.reduce_mean(net_acc)
+
+            pred_box, pred_cls, pred_val = ssd.pred(output_tensors, d_boxes, num_classes=num_classes, num_boxes=num_boxes, iou_threshold=0.5)
 
     return {
             'box' : tf.identity(pred_box, name='pred_box'),
             'cls' : tf.identity(pred_cls, name='pred_cls'),
-            'score' : tf.identity(pred_val, name='pred_val'),
-            'loss' : loss,
+            'val' : tf.identity(pred_val, name='pred_val'),
             'acc' : acc,
             }
 
-def get_or_create_bottlenecks(sess, bottleneck_tensor, image, loader, anns, df_boxes, batch_size):
+def get_or_create_bottlenecks(sess, bottleneck_tensors, image, loader, anns, batch_size):
 
     all = (batch_size <= 0)
 
     if not all:
         anns = np.random.choice(anns, batch_size, replace=False)
 
-    btls = []
+    n = len(bottleneck_tensors)
+    btls = [[] for _ in range(n)]
+    boxs = []
     lbls = []
+    spls = []
 
     for i, ann in enumerate(anns):
 
@@ -240,24 +262,27 @@ def get_or_create_bottlenecks(sess, bottleneck_tensor, image, loader, anns, df_b
             print '%d ) %s' % (i, ann)
 
         ### GRAB DATA ###
-        btl_file = os.path.join(bottleneck_root, ann + '_btl.npy')
-        lbl_file = os.path.join(bottleneck_root, ann + '_lbl.npy')
+        btl_file = os.path.join(bottleneck_root, ann + '_btl.npz')
+
+        img_file, ann = loader.grab_pair(ann)
 
         if all or not os.path.exists(btl_file):
-            img_file, ann = loader.grab_pair(ann)
-            image_in = cv2.imread(img_file)[...,::-1]/255.0
-            bbox_in, label_in = ann2bbox(ann, categories)
             # TODO : currently disabled btl
-            #btl = sess.run(bottleneck_tensor, feed_dict={image : image_in})
-            #np.save(btl_file, btl, allow_pickle=True)
-            lbl = ssd.create_label(bbox_in, label_in, df_boxes, num_classes)
-            np.save(lbl_file, lbl, allow_pickle=True)
+            image_in = cv2.imread(img_file)[...,::-1]/255.0
+            btl = sess.run(bottleneck_tensors, feed_dict={image : image_in})
+            d = {str(i) : btl[i] for i in range(n)}
+            np.savez(btl_file, **d)
 
         if not all:
             btl = np.load(btl_file, allow_pickle=True)
-            lbl = np.load(lbl_file, allow_pickle=True)
-            btls.append(btl)
-            lbls.append(lbl)
+            for i in range(n):
+                btls[i].append(btl[str(i)])# for i in range(n))
+            #btls[i].append(btl[str(i)] for i in range(n))
+
+        box, lbl = ann2bbox(ann, categories)
+        boxs.append(box)
+        lbls.append(lbl)
+        spls.append(len(lbl))
         #################
 
         ### RUN DISTORTION ###
@@ -267,9 +292,11 @@ def get_or_create_bottlenecks(sess, bottleneck_tensor, image, loader, anns, df_b
         ######################
 
     if not all:
-        btls = np.concatenate(btls, axis=0)
+        btls = [np.concatenate(b, axis=0) for b in btls]
+        boxs = np.concatenate(boxs, axis=0)
         lbls = np.concatenate(lbls, axis=0)
-        return btls, lbls
+        # no need to concatenate spls
+        return btls, boxs, spls, lbls
     else:
         return [], []
 
@@ -322,24 +349,42 @@ def main(_):
         with tf.Session() as sess:
 
             ### DEFINE MODEL ###
-            bottleneck_tensor = tf.stop_gradient(sess.graph.get_tensor_by_name(bottleneck_name))
-            _, h, w, d = bottleneck_tensor.get_shape().as_list()
-            input_tensor = tf.placeholder_with_default(bottleneck_tensor, shape=(None, h, w, d))
+
+            bottleneck_names = [
+                    'MobileNet/conv_ds_6/pw_batch_norm/Relu:0',
+                    'MobileNet/conv_ds_12/pw_batch_norm/Relu:0',
+                    'MobileNet/conv_ds_14/pw_batch_norm/Relu:0'
+                    ]
+
+            bottleneck_tensors = [tf.stop_gradient(sess.graph.get_tensor_by_name(b)) for b in bottleneck_names]
+
+            input_tensors = [tf.placeholder_with_default(b, shape=[None] + b.get_shape().as_list()[1:]) for b in bottleneck_tensors]
+
             gt_boxes = tf.placeholder(tf.float32, (None, 4)) # ground truth boxes
-            gt_labels = tf.placeholder(tf.float32, (None, 1)) # ground truth labels
+            gt_splits = tf.placeholder(tf.int32, [batch_size]) # # ground truth boxes per sample
+            gt_labels = tf.placeholder(tf.int32, [None]) # ground truth labels
+
             is_training = tf.placeholder(tf.bool, [], name='is_training')
 
-            train = extended_ops(input_tensor, gt_boxes, gt_labels, num_classes, is_training=is_training, reuse=None)
+            train = extended_ops(input_tensors, gt_boxes, gt_splits, gt_labels, num_classes, is_training=is_training, reuse=None)
+
+            loss = tf.losses.get_total_loss()
+            with tf.name_scope('evaluation'):
+                tf.summary.scalar('loss', loss)
+                tf.summary.scalar('accuracy', train['acc'])
             
             update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
             with tf.control_dependencies(update_ops):
-                opt = tf.train.AdamOptimizer(learning_rate = learning_rate).minimize(train['loss'])
+                opt = tf.train.AdamOptimizer(learning_rate = learning_rate)#.minimize(train['loss'])
+                opt = slim.learning.create_train_op(loss, opt)
             ####################
 
             sess.run(tf.global_variables_initializer())
 
             saver = tf.train.Saver(variables_to_restore)
             saver.restore(sess, input_ckpt_path)
+
+            total_saver = tf.train.Saver() # -- save all
 
             run_id = 'run_%02d' % len(os.walk(log_root).next()[1])
             run_log_root = os.path.join(log_root, run_id)
@@ -356,29 +401,41 @@ def main(_):
             anns_train = anns[:sp]
             anns_valid = anns[sp:]
             
-            df_boxes = [ssd.default_box(bottleneck_tensor, box_ratios)]
-
             # cache call - comment when run once
             #get_or_create_bottlenecks(sess, bottleneck_tensor, image, loader, anns, df_boxes, batch_size=-1)
 
             for i in range(train_iters):
 
-                btls, lbls = get_or_create_bottlenecks(sess, bottleneck_tensor, image, loader, anns_train, df_boxes, batch_size)
-                #box,lbl = ann2bbox(loader.grab_pair(anns_train[0])[1], categories)
-                ssd.create_label_tf(gt_boxes, bottleneck_tensor, num_classes, box_ratios)
+                btls, boxs, spls, lbls = get_or_create_bottlenecks(sess, bottleneck_tensors, image, loader, anns_train, batch_size)
 
-                s,_ = sess.run([merged, opt], feed_dict={input_tensor : btls, label_tensor: lbls, is_training : True})
+                ## CREATE FEED DICT ##
+                feed_dict = {
+                        btl : btl_in for (btl,btl_in) in zip(input_tensors, btls)
+                        }
+                feed_dict[gt_boxes] = boxs
+                feed_dict[gt_splits] = spls 
+                feed_dict[gt_labels] = lbls 
+                feed_dict[is_training] = True
+                ######################
+
+                s,_ = sess.run([merged, opt], feed_dict)
                 train_writer.add_summary(s, i)
 
                 if i % 20 == 0: # -- evaluate
-                    btls, lbls = get_or_create_bottlenecks(sess, bottleneck_tensor, image, loader, anns_valid, df_boxes, valid_batch_size)
-
-                    l, a, s = sess.run([train['loss'], train['acc'], merged], feed_dict={input_tensor : btls, label_tensor: lbls, is_training : False})
-                    b, c, sc = sess.run([train['box'], train['cls'], train['score']], feed_dict={input_tensor : btls, label_tensor: lbls, is_training : False})
+                    btls, boxs, spls, lbls = get_or_create_bottlenecks(sess, bottleneck_tensors, image, loader, anns_valid, batch_size)
+                    feed_dict = {
+                            btl : btl_in for (btl,btl_in) in zip(input_tensors, btls)
+                            }
+                    feed_dict[gt_boxes] = boxs
+                    feed_dict[gt_splits] = spls 
+                    feed_dict[gt_labels] = lbls 
+                    feed_dict[is_training] = False
+                    l, a, s = sess.run([loss, train['acc'], merged], feed_dict = feed_dict)
+                    #b, c, sc = sess.run([train['box'], train['cls'], train['val']], feed_dict=feed_dict)
 
                     valid_writer.add_summary(s, i)
                     print('%d ) Loss : %.3f, Accuracy : %.2f' % (i, l, a))
-                    saver.save(sess, output_ckpt_path)
+                    total_saver.save(sess, output_ckpt_path)
 
                 ### VISUALIZE DISTORTIONS ###
                 # d_im_bbox = tf.image.draw_bounding_boxes(tf.expand_dims(d_image,0), tf.expand_dims(d_bbox, 0))
@@ -396,7 +453,7 @@ def main(_):
                 #c_pred = sess.run(predictions, feed_dict={image : c_image})
                 ######################
             output_graph_def = graph_util.convert_variables_to_constants(
-                    sess, sess.graph.as_graph_def(), [train[s].name[:-2] for s in ['box', 'cls', 'score']]) # strip :0
+                    sess, sess.graph.as_graph_def(), [train[s].name[:-2] for s in ['box', 'cls', 'val']]) # strip :0
             with gfile.FastGFile(output_graph_path, 'wb') as f:
               f.write(output_graph_def.SerializeToString())
             with gfile.FastGFile(output_labels_path, 'w') as f:
