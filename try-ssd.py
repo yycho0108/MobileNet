@@ -52,7 +52,7 @@ MODEL_INPUT_WIDTH = 224
 MODEL_INPUT_HEIGHT = 224
 MODEL_INPUT_DEPTH = 3
 
-train_iters = int(1e3)
+train_iters = int(4e3)
 split_ratio = 0.85
 learning_rate = 5e-4
 
@@ -203,7 +203,7 @@ def extended_ops(input_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor,
 
             # extra features
             for i in range(3):
-                logits = dwc(input_tensors[-1], 128, scope='f_dwc_%d_1' % i, stride=2)
+                logits = dwc(input_tensors[-1], 256, scope='f_dwc_%d_1' % i, stride=2)
                 input_tensors.append(logits)
 
             # bbox predictions
@@ -212,7 +212,8 @@ def extended_ops(input_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor,
                 h,w = t.get_shape().as_list()[1:3]
                 #logits = slim.conv2d(t, num_boxes * (num_classes+4), kernel_size=[3,3])
                 logits = dwc(t, 256, scope='b_dwc_%d_1' % i)
-                logits = dwc(logits, num_boxes * (num_classes+4), scope='b_dwc_%d_2' % i)
+                logits = dwc(logits, 128, scope='b_dwc_%d_2' % i) # deeper?
+                logits = dwc(logits, num_boxes * (num_classes+4), scope='b_dwc_%d_3' % i)
                 logits = tf.reshape(logits, (-1, h, w, num_boxes, 4+num_classes)) 
                 output_tensors.append(logits)
 

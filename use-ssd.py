@@ -76,12 +76,16 @@ def run_graph(sess, image_data, labels, input_layer_name, output_names,
     #   predictions  will contain a two-dimensional array, where one
     #   dimension represents the input image count, and the other has
     #   predictions per class
-    output_tensors = [sess.graph.get_tensor_by_name(o) for o in output_names]
+    box_t, cls_t, val_t = [sess.graph.get_tensor_by_name(o) for o in output_names]
+    print cls_t
+    filter_t = tf.cast(tf.equal(cls_t, 14), tf.float32) # --> person
+    idx_t = tf.image.non_max_suppression(box_t, val_t*filter_t, max_output_size=10, iou_threshold=0.25)
+    s_box, s_cls, s_val = tf.gather(box_t, idx_t), tf.gather(cls_t, idx_t), tf.gather(val_t, idx_t)
 
     is_training = sess.graph.get_tensor_by_name('is_training:0')
-    box, cls, val = sess.run(output_tensors, {input_layer_name: image_data, is_training : False})
-
-    print box[0], cls[0]
+    box, cls, val = sess.run([s_box, s_cls, s_val], {input_layer_name: image_data, is_training : False})
+    #box, cls, val = sess.run([box_t, cls_t, val_t], {input_layer_name: image_data, is_training : False})
+    print box[0], cls[0], val
 
     return box, cls, val
 
@@ -165,18 +169,18 @@ def main(argv):
 
           good_idx = (val > 0.75)
           num = max(1, min(10, np.count_nonzero(good_idx)))
-          best_idx = np.argsort(val)[-num:]
-          print num
-          print len(best_idx)
+          #best_idx = np.argsort(val)[-num:]
+          #print num
+          #print len(best_idx)
+          #print best_idx
 
           frame = cv2.imread(image_path)
           h,w,_ = frame.shape
           lab_frame = np.zeros((7,7,3), dtype=np.uint8)
 
-          print [labels[c] for c in cls[:5]]
-          print box[:0]
+          print [labels[c] for c in cls[:num]]
 
-          drawn = sess.run(tf.image.draw_bounding_boxes(np.expand_dims(frame,0), np.expand_dims(box[0:1],0)))[0]
+          drawn = sess.run(tf.image.draw_bounding_boxes(np.expand_dims(frame,0), np.expand_dims(box[:num],0)))[0]
 
           cv2.imshow('frame', frame)
           cv2.imshow('drawn', drawn)
@@ -190,8 +194,8 @@ def main(argv):
           i = 0
           for sub in os.listdir(FLAGS.image):
               i += 1
-              if i < 300:
-                  continue;
+              #if i < 300:
+              #    continue;
               image_path = os.path.join(FLAGS.image, sub)
               if not run(image_path):
                   break

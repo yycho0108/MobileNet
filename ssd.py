@@ -279,12 +279,12 @@ def pred(output_tensors, df_boxes, num_classes, num_boxes, max_output_size=200, 
     s_boxes = tf.concat(s_boxes, axis=0)
     s_cls = tf.concat(s_cls, 0)
     s_val = tf.concat(s_val, 0)
-
+    return s_boxes, s_cls, s_val
     #with tf.control_dependencies([tf.assert_equal(tf.shape(s_boxes)[0], tf.shape(s_cls)[0])]):
-    idx = tf.image.non_max_suppression(s_boxes, s_val, max_output_size = max_output_size, iou_threshold=iou_threshold)
-    return tf.gather(s_boxes, idx), tf.gather(s_cls, idx), tf.gather(s_val, idx)
+    #idx = tf.image.non_max_suppression(s_boxes, s_val, max_output_size = max_output_size, iou_threshold=iou_threshold)
+    #return tf.gather(s_boxes, idx), tf.gather(s_cls, idx), tf.gather(s_val, idx)
 
-def train(output, iou, sel, cls, loc, num_classes, pos_neg_ratio=3.0, alpha = 100.0, conf_thresh = 0.5): # --> per tensor
+def train(output, iou, sel, cls, loc, num_classes, pos_neg_ratio=3.0, alpha = 1.0, conf_thresh = 0.5): # --> per tensor
     # output should be something like
     # [b, m, 4 + num_classes]
     # each default box gets matched to best gt box?
@@ -310,7 +310,8 @@ def train(output, iou, sel, cls, loc, num_classes, pos_neg_ratio=3.0, alpha = 10
     y_conf = tf.reduce_max(tf.nn.softmax(y_cls), -1)# prediction confidence per default box, [bs, m]
 
     ### POSITIVE (Object Exists)
-    p_mask = (iou > conf_thresh) # == i.e. object found at default box, [bs, m]
+    #p_mask = (iou > conf_thresh) # == i.e. object found at default box, [bs, m]
+    p_mask = sel # matches, best + good
     p_mask_f = tf.cast(p_mask, tf.float32)
     n_pos = tf.reduce_sum(p_mask_f)
 
@@ -324,34 +325,35 @@ def train(output, iou, sel, cls, loc, num_classes, pos_neg_ratio=3.0, alpha = 10
     k = tf.cast(tf.minimum(n_pos * pos_neg_ratio + tf.cast(batch_size, tf.float32), n_neg), tf.int32)
 
     neg_val, neg_idx = tf.nn.top_k(tf.reshape(disparity, [-1]), k = k)
-    sub_n_mask = tf.logical_and(n_mask, disparity > neg_val[-1]) # final negative mask
+    sub_n_mask = tf.logical_and(n_mask, disparity >= neg_val[-1]) # final negative mask
     sub_n_mask_f = tf.cast(sub_n_mask, tf.float32)
 
     ### COLLECT LOSSES ###
     pos_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=y_cls, labels=cls) * p_mask_f
 
     neg_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=y_cls, labels=cls) * sub_n_mask_f
-    #neg_logits = tf.one_hot(tf.cast(y_conf < conf_thresh,tf.int32), 2)
-    #neg_labels = tf.cast(n_mask, tf.int32)
-    #neg_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=neg_logits, labels=neg_labels) * n_mask_f
+    #neg_logits = tf.one_hot(tf.cast(y_conf < conf_thresh,tf.int32), 2) # 1=neg, 0=pos
+    #neg_labels = tf.logical_and(tf.cast(n_mask, tf.int32) #
+    #neg_loss = 2 * tf.nn.sparse_softmax_cross_entropy_with_logits(logits=neg_logits, labels=neg_labels) * sub_n_mask_f
 
-    loc_loss = alpha * smooth_l1(y_loc - loc) * p_mask_f
+    loc_loss = 50 * smooth_l1(y_loc - loc) * p_mask_f
     #loc_loss = tf.nn.l2_loss(y_loc - loc) * p_mask_f
     #loc_loss = alpha * tf.nn.l2_loss(y_loc - t_loc) * p_mask_f
 
     with tf.name_scope('losses'):
-        pos_loss = tf.where(n_pos>0, tf.reduce_sum(pos_loss)/(batch_size), 0)
+        pos_loss = tf.where(n_pos>0, tf.reduce_sum(pos_loss)/(n_pos + batch_size), 0)
         tf.summary.scalar('pos', pos_loss)
         tf.losses.add_loss(pos_loss)
-        neg_loss = tf.where(k>0, tf.reduce_sum(neg_loss)/tf.cast(batch_size,tf.float32), 0)
+        neg_loss = tf.where(k>0, tf.reduce_sum(neg_loss)/tf.cast(k + batch_size,tf.float32), 0)
         tf.summary.scalar('neg', neg_loss)
         tf.losses.add_loss(neg_loss)
-        loc_loss = tf.where(n_pos>0, tf.reduce_sum(loc_loss)/(batch_size), 0)
+        loc_loss = tf.where(n_pos>0, tf.reduce_sum(loc_loss)/(n_pos + batch_size), 0)
         tf.summary.scalar('loc', loc_loss)
         tf.losses.add_loss(loc_loss)
 
     acc_clf = tf.cast(tf.logical_and(tf.equal(tf.cast(y_pred, tf.int32), cls),p_mask), tf.float32)
     acc_pos = tf.cast(tf.logical_and(p_mask, y_conf > conf_thresh), tf.float32)
+    acc_neg = tf.cast(tf.logical_and(n_mask, y_conf < conf_thresh), tf.float32)
     acc_obj = tf.cast(tf.equal(n_mask, y_conf < conf_thresh),  tf.float32)
 
     with tf.name_scope('counts'):
@@ -362,6 +364,7 @@ def train(output, iou, sel, cls, loc, num_classes, pos_neg_ratio=3.0, alpha = 10
     with tf.name_scope('debug_acc'):
         tf.summary.scalar('acc_clf', tf.reduce_sum(acc_clf) / n_pos)
         tf.summary.scalar('acc_pos', tf.reduce_sum(acc_pos) / n_pos)
+        tf.summary.scalar('acc_neg', tf.reduce_sum(acc_neg) / n_neg)
         tf.summary.scalar('acc_obj', tf.reduce_sum(acc_obj) / n_neg)
 
     acc_mask = tf.where(p_mask, acc_clf, acc_obj)
