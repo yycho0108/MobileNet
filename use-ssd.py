@@ -166,25 +166,25 @@ def main(argv):
       is_training = sess.graph.get_tensor_by_name('is_training:0')
 
       # processing tensors
-      idx_t = tf.reshape(tf.where(tf.greater(val_t, tf.constant(0.1))), [-1]) # discard useless boxes first
+      idx_t = tf.image.non_max_suppression(box_t, val_t, max_output_size=10, iou_threshold=0.45) # collect best boxes
       box_t, cls_t, val_t = [tf.gather(t, idx_t) for t in [box_t, cls_t, val_t]]
 
-      idx_t = tf.image.non_max_suppression(box_t, val_t, max_output_size=10, iou_threshold=0.25) # collect best boxes
-      box_t, cls_t, val_t = [tf.gather(t, idx_t) for t in [box_t, cls_t, val_t]]
+      cv2.namedWindow('frame')
+      cv2.moveWindow('frame', 50, 50)
 
       def run(image_path):
           image_data = load_image(image_path)
           with Timer('Detection'):
-              run_metadata = tf.RunMetadata()
+              #run_metadata = tf.RunMetadata()
     
-              box, cls, val = sess.run([box_t, cls_t, val_t], {input_tensor: image_data, is_training : False},
-                      options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE),
-                      run_metadata = run_metadata)
+              box, cls, val = sess.run([box_t, cls_t, val_t], {input_tensor: image_data, is_training : False})
+              #        options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE),
+              #        run_metadata = run_metadata)
 
-              trace = timeline.Timeline(step_stats = run_metadata.step_stats)
-              ctf = trace.generate_chrome_trace_format()
-              with open('timeline.json', 'w') as f:
-                  f.write(ctf)
+              #trace = timeline.Timeline(step_stats = run_metadata.step_stats)
+              #ctf = trace.generate_chrome_trace_format()
+              #with open('timeline.json', 'w') as f:
+              #    f.write(ctf)
 
           good_idx = (val > 0.75)
           num = max(1, min(10, np.count_nonzero(good_idx)))
@@ -208,7 +208,6 @@ def main(argv):
               print 'x,y', x,y
               putText(frame, (x,y), labels[c])
               cv2.rectangle(frame, (x-w//2,y-h//2), (x+w//2,y+h//2), (255,0,0), 2)
-
           cv2.imshow('frame', frame)
 
           if cv2.waitKey(0) == 27:
