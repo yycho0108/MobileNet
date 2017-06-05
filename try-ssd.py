@@ -54,9 +54,9 @@ MODEL_INPUT_WIDTH = 224
 MODEL_INPUT_HEIGHT = 224
 MODEL_INPUT_DEPTH = 3
 
-train_iters = int(10e3)
+train_iters = int(4e3)
 split_ratio = 0.85
-learning_rate = 1e-4
+learning_rate = 5e-4
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
@@ -209,7 +209,7 @@ def extended_ops(input_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor,
                 normalizer_fn = slim.batch_norm,
                 normalizer_params={
                     'is_training' : is_training,
-                    'decay' : 0.9,
+                    'decay' : 0.99,
                     'fused' : True,
                     'reuse' : reuse,
                     }

@@ -172,7 +172,7 @@ def main(argv):
               box, cls, val = run_graph(sess,image_data, labels, FLAGS.input_layer, ['pred_box:0', 'pred_cls:0', 'pred_val:0'],
                         FLAGS.num_top_predictions)
 
-          good_idx = (val > 0.9)
+          good_idx = (val > 0.75)
           num = max(1, min(10, np.count_nonzero(good_idx)))
           #best_idx = np.argsort(val)[-num:]
           #print num

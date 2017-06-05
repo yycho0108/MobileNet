@@ -330,11 +330,15 @@ def train(output, iou, sel, cls, loc, num_classes, pos_neg_ratio=3.0, alpha = 1.
 
     ### COLLECT LOSSES ###
     pos_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=y_cls, labels=cls) * p_mask_f
+    #neg_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=y_cls, labels=cls) * sub_n_mask_f # naive neg loss
 
-    neg_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=y_cls, labels=cls) * sub_n_mask_f
+    # cross entropy = -sum(targ * log(pred))
     #neg_logits = tf.one_hot(tf.cast(y_conf < conf_thresh,tf.int32), 2) # 1=neg, 0=pos
-    #neg_labels = tf.logical_and(tf.cast(n_mask, tf.int32) #
-    #neg_loss = 2 * tf.nn.sparse_softmax_cross_entropy_with_logits(logits=neg_logits, labels=neg_labels) * sub_n_mask_f
+    neg_logits = tf.stack([y_conf, 1-y_conf], axis=-1) # class 0 : pos, class 1 : neg
+    neg_labels = tf.cast(n_mask, tf.int32) # class 0 : pos, class 1 : neg
+    neg_loss = (num_classes/2.0) * tf.nn.sparse_softmax_cross_entropy_with_logits(logits=neg_logits, labels=neg_labels) * sub_n_mask_f
+    # pos loss has num_classes classes, neg_loss only has 2
+    # needs to be scaled accordingly
 
     loc_loss = 50 * smooth_l1(y_loc - loc) * p_mask_f
     #loc_loss = tf.nn.l2_loss(y_loc - loc) * p_mask_f
