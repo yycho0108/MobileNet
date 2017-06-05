@@ -188,7 +188,7 @@ def ann2bbox(ann, categories):
 
     return np.asarray(bbox, dtype=np.float32), np.asarray(labels, dtype=np.int32)
 
-def dwc(inputs, num_out, scope, stride=1):
+def dwc(inputs, num_out, scope, stride=1, output_activation_fn=tf.nn.relu):
     dc = slim.separable_conv2d(inputs,
             num_outputs=None,
             stride=stride,
@@ -198,13 +198,14 @@ def dwc(inputs, num_out, scope, stride=1):
     pc = slim.conv2d(dc,
             num_out,
             kernel_size=[1, 1],
+            activation_fn=output_activation_fn,
             scope=scope+'/pc')
     return pc
 
 def extended_ops(input_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor, num_classes, is_training=True, reuse=None):
     with tf.variable_scope('extended_ops') as sc:
         with slim.arg_scope([slim.conv2d, slim.separable_convolution2d],
-                activation_fn=tf.nn.relu,
+                activation_fn=tf.nn.elu,
                 weights_regularizer=slim.l2_regularizer(0.005),
                 normalizer_fn = slim.batch_norm,
                 normalizer_params={
@@ -219,19 +220,21 @@ def extended_ops(input_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor,
 
             # extra features
             for i in range(3):
-                logits = dwc(input_tensors[-1], 256, scope='f_dwc_%d_1' % i, stride=2)
-                input_tensors.append(logits)
+                with tf.variable_scope('feat_%d' % i):
+                    logits = dwc(input_tensors[-1], 256, scope='f_dwc_%d' % i, stride=2)
+                    input_tensors.append(logits)
 
             # bbox predictions
             output_tensors = []
             for i, t in enumerate(input_tensors):
                 h,w = t.get_shape().as_list()[1:3]
-                #logits = slim.conv2d(t, num_boxes * (num_classes+4), kernel_size=[3,3])
-                logits = dwc(t, 256, scope='b_dwc_%d_1' % i)
-                logits = dwc(logits, 128, scope='b_dwc_%d_2' % i) # deeper?
-                logits = dwc(logits, num_boxes * (num_classes+4), scope='b_dwc_%d_3' % i)
-                logits = tf.reshape(logits, (-1, h, w, num_boxes, 4+num_classes)) 
-                output_tensors.append(logits)
+                with tf.variable_scope('box_%d' % i):
+                    #logits = slim.conv2d(t, num_boxes * (num_classes+4), kernel_size=[3,3])
+                    logits = dwc(t, 256, scope='b_dwc_1')
+                    logits = dwc(logits, 128, scope='b_dwc_2') # deeper?
+                    logits = dwc(logits, num_boxes * (num_classes+4), scope='b_dwc_3', output_activation_fn=None)
+                    logits = tf.reshape(logits, (-1, h, w, num_boxes, 4+num_classes)) 
+                    output_tensors.append(logits)
 
             d_boxes = []
             net_acc = []
@@ -371,7 +374,7 @@ def main(_):
         # Define the model #
         ####################
 
-        distorter = Distorter(image)
+        #distorter = Distorter(image)
         # --> original predictions ...
         logits, _ = network_fn(images)
         #predictions = tf.argmax(logits, 1)

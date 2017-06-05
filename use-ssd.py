@@ -71,12 +71,7 @@ from tensorflow.python.client import timeline
 
 def run_graph(sess, image_data, labels, input_layer_name, output_names,
               num_top_predictions):
-    for op in sess.graph.get_operations():
-        print('op', op.name)
-    # Feed the image_data as input to the graph.
-    #   predictions  will contain a two-dimensional array, where one
-    #   dimension represents the input image count, and the other has
-    #   predictions per class
+
     box_t, cls_t, val_t = [sess.graph.get_tensor_by_name(o) for o in output_names]
     #print cls_t
     #filter_t = tf.cast(tf.equal(cls_t, 14), tf.float32) # --> person
@@ -157,17 +152,39 @@ def main(argv):
   config = tf.ConfigProto(log_device_placement=False, gpu_options=gpu_options)
 
   with tf.Session(config=config) as sess:
+      
 
       # load labels
       labels = load_labels(FLAGS.labels) + ['background']
-          # load graph, which is stored in the default session
+      # load graph, which is stored in the default session
       load_graph(FLAGS.graph)
+      output_names = ['pred_box:0', 'pred_cls:0', 'pred_val:0']
+
+      # grab tensors
+      box_t, cls_t, val_t = [sess.graph.get_tensor_by_name(o) for o in output_names]
+      input_tensor = sess.graph.get_tensor_by_name('input:0')
+      is_training = sess.graph.get_tensor_by_name('is_training:0')
+
+      # processing tensors
+      idx_t = tf.reshape(tf.where(tf.greater(val_t, tf.constant(0.1))), [-1]) # discard useless boxes first
+      box_t, cls_t, val_t = [tf.gather(t, idx_t) for t in [box_t, cls_t, val_t]]
+
+      idx_t = tf.image.non_max_suppression(box_t, val_t, max_output_size=10, iou_threshold=0.25) # collect best boxes
+      box_t, cls_t, val_t = [tf.gather(t, idx_t) for t in [box_t, cls_t, val_t]]
 
       def run(image_path):
           image_data = load_image(image_path)
           with Timer('Detection'):
-              box, cls, val = run_graph(sess,image_data, labels, FLAGS.input_layer, ['pred_box:0', 'pred_cls:0', 'pred_val:0'],
-                        FLAGS.num_top_predictions)
+              run_metadata = tf.RunMetadata()
+    
+              box, cls, val = sess.run([box_t, cls_t, val_t], {input_tensor: image_data, is_training : False},
+                      options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE),
+                      run_metadata = run_metadata)
+
+              trace = timeline.Timeline(step_stats = run_metadata.step_stats)
+              ctf = trace.generate_chrome_trace_format()
+              with open('timeline.json', 'w') as f:
+                  f.write(ctf)
 
           good_idx = (val > 0.75)
           num = max(1, min(10, np.count_nonzero(good_idx)))

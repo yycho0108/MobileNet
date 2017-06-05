@@ -213,7 +213,7 @@ def create_label_tf(gt_boxes, gt_split_tensor, gt_label_tensor, d_box):
     #dh = (dy2-dy1)
     
     a0 = tf.assert_greater(d_box[:,3] - d_box[:,1], 0.0)
-    a1 = tf.assert_greater(d_box[:,2] - d_box[:,0], 0.0)
+    a1 = tf.assert_greater(d_box[:,2] - d_box[:,0], 0.0) # without these, tensorflow would simply segfault??
     with tf.control_dependencies([a0,a1]):
         dw = tf.log(tf.div(gt_boxes[:,:,3] - gt_boxes[:,:,1], d_box[None,:,3] - d_box[None,:,1]))
         dh = tf.log(tf.div(gt_boxes[:,:,2] - gt_boxes[:,:,0], d_box[None,:,2] - d_box[None,:,0]))
@@ -232,7 +232,7 @@ def smooth_l1(x):
 
 def pred(output_tensors, df_boxes, num_classes): # --> NOT per tensor
 
-    s_boxes = []
+    s_box = []
     s_cls = []
     s_val = [] 
 
@@ -265,15 +265,18 @@ def pred(output_tensors, df_boxes, num_classes): # --> NOT per tensor
 
         out_box = tf.reshape(tf.stack([y1,x1,y2,x2], axis=-1), (-1,4))
 
-        s_boxes.append(out_box) # center-based, to simplify calculations
+        s_box.append(out_box) # center-based, to simplify calculations
         s_cls.append(pred_cls)
         s_val.append(pred_val)
 
-    s_boxes = tf.concat(s_boxes, axis=0, name='boxes_concat')
+    s_box = tf.concat(s_box, axis=0, name='boxes_concat')
     s_cls = tf.concat(s_cls, axis=0, name='cls_concat')
     s_val = tf.concat(s_val, axis=0, name='val_concat')
 
-    return s_boxes, s_cls, s_val
+    idx_t = tf.reshape(tf.where(tf.greater(s_val, tf.constant(0.1))), [-1]) # only collect useful boxes
+    s_box, s_cls, s_val = [tf.gather(t, idx_t) for t in [s_box, s_cls, s_val]]
+
+    return s_box, s_cls, s_val
 
 def train(output, iou, sel, cls, loc, num_classes, pos_neg_ratio=3.0, alpha = 1.0, conf_thresh = 0.5): # --> per tensor
     # output should be something like
@@ -321,29 +324,29 @@ def train(output, iou, sel, cls, loc, num_classes, pos_neg_ratio=3.0, alpha = 1.
 
     ### COLLECT LOSSES ###
     pos_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=y_cls, labels=cls) * p_mask_f
-    #neg_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=y_cls, labels=cls) * sub_n_mask_f # naive neg loss
 
     # cross entropy = -sum(targ * log(pred))
-    #neg_logits = tf.one_hot(tf.cast(y_conf < conf_thresh,tf.int32), 2) # 1=neg, 0=pos
+    #neg_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=y_cls, labels=cls) * sub_n_mask_f # naive neg loss
     neg_logits = tf.stack([y_conf, 1-y_conf], axis=-1) # class 0 : pos, class 1 : neg
     neg_labels = tf.cast(n_mask, tf.int32) # class 0 : pos, class 1 : neg
     neg_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=neg_logits, labels=neg_labels) * sub_n_mask_f
 
-    loc_loss = 50 * smooth_l1(y_loc - loc) * p_mask_f
-    #loc_loss = tf.nn.l2_loss(y_loc - loc) * p_mask_f
+    loc_loss = smooth_l1(y_loc - loc) * p_mask_f
     #loc_loss = alpha * tf.nn.l2_loss(y_loc - t_loc) * p_mask_f
 
     with tf.name_scope('losses'):
         pos_loss = tf.where(n_pos>0, tf.reduce_sum(pos_loss)/(n_pos + batch_size), 0)
         tf.summary.scalar('pos', pos_loss)
         tf.losses.add_loss(pos_loss)
-        neg_loss = tf.where(k>0, tf.reduce_sum(neg_loss)/tf.cast(k + batch_size,tf.float32), 0)
+        neg_loss = 5 * tf.where(k>0, tf.reduce_sum(neg_loss)/tf.cast(k + batch_size,tf.float32), 0)
         tf.summary.scalar('neg', neg_loss)
         tf.losses.add_loss(neg_loss)
-        loc_loss = tf.where(n_pos>0, tf.reduce_sum(loc_loss)/(n_pos + batch_size), 0)
+        loc_loss = 50 * tf.where(n_pos>0, tf.reduce_sum(loc_loss)/(n_pos + batch_size), 0)
         tf.summary.scalar('loc', loc_loss)
         tf.losses.add_loss(loc_loss)
 
+
+    ### DEBUGGING INFO ###
     acc_clf = tf.cast(tf.logical_and(tf.equal(tf.cast(y_pred, tf.int32), cls),p_mask), tf.float32)
     acc_pos = tf.cast(tf.logical_and(p_mask, y_conf > conf_thresh), tf.float32)
     acc_neg = tf.cast(tf.logical_and(n_mask, y_conf < conf_thresh), tf.float32)
@@ -359,6 +362,7 @@ def train(output, iou, sel, cls, loc, num_classes, pos_neg_ratio=3.0, alpha = 1.
         tf.summary.scalar('acc_pos', tf.reduce_sum(acc_pos) / n_pos)
         tf.summary.scalar('acc_neg', tf.reduce_sum(acc_neg) / n_neg)
         tf.summary.scalar('acc_obj', tf.reduce_sum(acc_obj) / n_neg)
+    ######################
 
     acc_mask = tf.where(p_mask, acc_clf, acc_obj)
     acc = tf.reduce_mean(tf.cast(acc_mask, tf.float32))
