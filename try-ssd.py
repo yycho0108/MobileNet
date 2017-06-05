@@ -15,6 +15,8 @@ from nets import nets_factory
 from preprocessing import preprocessing_factory
 
 import os
+import signal
+
 from voc_utils import VOCLoader
 
 import ssd
@@ -52,9 +54,9 @@ MODEL_INPUT_WIDTH = 224
 MODEL_INPUT_HEIGHT = 224
 MODEL_INPUT_DEPTH = 3
 
-train_iters = int(4e3)
+train_iters = int(10e3)
 split_ratio = 0.85
-learning_rate = 5e-4
+learning_rate = 1e-4
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
@@ -151,6 +153,20 @@ def add_input_distortions(image, bbox, label, flip_left_right=True, random_crop=
     ################
 
     return brightened_image, flipped_bbox, label
+
+class Distorter(object):
+    def __init__(self, image):
+        self.image = image
+        self.bbox = tf.placeholder(tf.float32, [None, 4])
+        self.label = tf.placeholder(tf.float32,  [None])
+        self.d_image, self.d_bbox, self.d_label = add_input_distortions(tf.expand_dims(self.image,0), self.bbox, self.label)
+        self.d_label = tf.squeeze(self.d_label, [-1])
+    def apply(self, sess, im_in, bbox_in, label_in):
+        while True:
+            d_im, d_bb, d_lbl = sess.run([self.d_image, self.d_bbox, self.d_label], feed_dict={self.image : im_in, self.bbox : bbox_in, self.label : label_in})
+            if len(d_lbl) > 0:
+                break
+        return d_im, d_bb, d_lbl
 
 def ann2bbox(ann, categories):
     width = int(ann.findChild('width').contents[0])
@@ -250,7 +266,7 @@ def extended_ops(input_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor,
             'acc' : acc,
             }
 
-def get_or_create_bottlenecks(sess, bottleneck_tensors, image, loader, anns, batch_size):
+def get_or_create_bottlenecks(sess, bottleneck_tensors, image, loader, anns, batch_size, distorter=None):
 
     all = (batch_size <= 0)
 
@@ -272,6 +288,7 @@ def get_or_create_bottlenecks(sess, bottleneck_tensors, image, loader, anns, bat
         btl_file = os.path.join(bottleneck_root, ann + '_btl.npz')
 
         img_file, ann = loader.grab_pair(ann)
+        box, lbl = ann2bbox(ann, categories)
 
         if all or not os.path.exists(btl_file):
             # TODO : currently disabled btl
@@ -281,12 +298,20 @@ def get_or_create_bottlenecks(sess, bottleneck_tensors, image, loader, anns, bat
             np.savez(btl_file, **d)
 
         if not all:
-            btl = np.load(btl_file, allow_pickle=True)
-            for i in range(n):
-                btls[i].append(btl[str(i)])# for i in range(n))
+            if distorter is not None and np.random.random() > 0.5:
+                # apply distortion
+                image_in = cv2.imread(img_file)[...,::-1]/255.0
+                image_in, box, lbl = distorter.apply(sess, image_in, box, lbl)
+                btl = sess.run(bottleneck_tensors, feed_dict={image : image_in})
+                for i in range(n):
+                    btls[i].append(btl[i])# for i in range(n))
+            else:
+                btl = np.load(btl_file, allow_pickle=True)
+                for i in range(n):
+                    btls[i].append(btl[str(i)])# for i in range(n))
+
             #btls[i].append(btl[str(i)] for i in range(n))
 
-        box, lbl = ann2bbox(ann, categories)
         boxs.append(box)
         lbls.append(lbl)
         spls.append(len(lbl))
@@ -307,7 +332,14 @@ def get_or_create_bottlenecks(sess, bottleneck_tensors, image, loader, anns, bat
     else:
         return [], []
 
+stop_request = False
+def sigint_handler(signal, frame):
+    global stop_request
+    stop_request = True
+
 def main(_):
+    global stop_request
+    signal.signal(signal.SIGINT, sigint_handler)
 
     with tf.Graph().as_default():
         slim.get_or_create_global_step()
@@ -339,10 +371,7 @@ def main(_):
         # Define the model #
         ####################
 
-        bbox = tf.placeholder(tf.float32, [None, 4])
-        label = tf.placeholder(tf.float32,  [None])
-        d_image, d_bbox, d_label = add_input_distortions(tf.expand_dims(image,0), bbox, label)
-
+        distorter = Distorter(image)
         # --> original predictions ...
         logits, _ = network_fn(images)
         #predictions = tf.argmax(logits, 1)
@@ -412,8 +441,11 @@ def main(_):
             #get_or_create_bottlenecks(sess, bottleneck_tensor, image, loader, anns, df_boxes, batch_size=-1)
 
             for i in range(train_iters):
+                if stop_request:
+                    break
 
                 btls, boxs, spls, lbls = get_or_create_bottlenecks(sess, bottleneck_tensors, image, loader, anns_train, batch_size)
+                # apply distortions to image with 1/2 probability
 
                 ## CREATE FEED DICT ##
                 feed_dict = {

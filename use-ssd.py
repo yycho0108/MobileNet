@@ -77,9 +77,9 @@ def run_graph(sess, image_data, labels, input_layer_name, output_names,
     #   dimension represents the input image count, and the other has
     #   predictions per class
     box_t, cls_t, val_t = [sess.graph.get_tensor_by_name(o) for o in output_names]
-    print cls_t
-    filter_t = tf.cast(tf.equal(cls_t, 14), tf.float32) # --> person
-    idx_t = tf.image.non_max_suppression(box_t, val_t*filter_t, max_output_size=10, iou_threshold=0.25)
+    #print cls_t
+    #filter_t = tf.cast(tf.equal(cls_t, 14), tf.float32) # --> person
+    idx_t = tf.image.non_max_suppression(box_t, val_t, max_output_size=10, iou_threshold=0.10)
     s_box, s_cls, s_val = tf.gather(box_t, idx_t), tf.gather(cls_t, idx_t), tf.gather(val_t, idx_t)
 
     is_training = sess.graph.get_tensor_by_name('is_training:0')
@@ -129,6 +129,11 @@ def resize(in_frame, h, w):
             out_frame[i_s:i_e,j_s:j_e] = in_frame[i,j]
     return out_frame
 
+def putText(frame, loc, txt):
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    ts = cv2.getTextSize(txt, font, 0.5, 0)[0]
+    pt = (int(loc[0] - ts[0]/2.0), int(loc[1] - ts[1]/2.0))
+    cv2.putText(frame, txt, pt, font, 0.5, (255,0,0))
 
 def main(argv):
   """Runs inference on an image."""
@@ -167,7 +172,7 @@ def main(argv):
               box, cls, val = run_graph(sess,image_data, labels, FLAGS.input_layer, ['pred_box:0', 'pred_cls:0', 'pred_val:0'],
                         FLAGS.num_top_predictions)
 
-          good_idx = (val > 0.75)
+          good_idx = (val > 0.9)
           num = max(1, min(10, np.count_nonzero(good_idx)))
           #best_idx = np.argsort(val)[-num:]
           #print num
@@ -175,12 +180,24 @@ def main(argv):
           #print best_idx
 
           frame = cv2.imread(image_path)
-          h,w,_ = frame.shape
+          H,W,_ = frame.shape
           lab_frame = np.zeros((7,7,3), dtype=np.uint8)
 
           print [labels[c] for c in cls[:num]]
 
           drawn = sess.run(tf.image.draw_bounding_boxes(np.expand_dims(frame,0), np.expand_dims(box[:num],0)))[0]
+          print 'ds', drawn.shape
+          
+          for c,b in zip(cls[:num], box[:num]):
+              x = int((b[1]+b[3])*W/2)
+              y = int((b[0]+b[2])*H/2)
+              w = int((b[3]-b[1])*W)
+              h = int((b[2]-b[0])*H)
+              print 'x,y', x,y
+              putText(drawn, (x,y), labels[c])
+              putText(frame, (x,y), labels[c])
+              cv2.rectangle(frame, (x-w//2,y-h//2), (x+w//2,y+h//2), (255,0,0), 2)
+
 
           cv2.imshow('frame', frame)
           cv2.imshow('drawn', drawn)
