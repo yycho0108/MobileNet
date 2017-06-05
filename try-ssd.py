@@ -18,6 +18,8 @@ import os
 import signal
 
 from voc_utils import VOCLoader
+from coco_utils import COCOLoader
+
 
 import ssd
 
@@ -28,15 +30,17 @@ slim = tf.contrib.slim
 #################
 #   PARAMETERS  #
 #################
-#input_ckpt_path = './data/model.ckpt-906808'
-input_ckpt_path = 'data/train/model.ckpt'
+input_ckpt_path = './data/model.ckpt-906808'
+#input_ckpt_path = 'data/train/model.ckpt'
 #bottleneck_name = 'MobileNet/conv_ds_14/pw_batch_norm/Relu:0'
 
 output_graph_path = 'data/train/output_graph.pb'
 output_labels_path = 'data/train/labels.txt'
 output_ckpt_path = 'data/train/model.ckpt'
 
-loader = VOCLoader(os.getenv('VOC_ROOT'))
+#loader = VOCLoader(os.getenv('VOC_ROOT'))
+train_loader = COCOLoader(os.getenv('COCO_ROOT'),'train2014')
+valid_loader = COCOLoader(os.getenv('COCO_ROOT'),'val2014')
 
 log_root = '/tmp/mobilenet_logs/'
 if not os.path.exists(log_root):
@@ -46,7 +50,7 @@ bottleneck_root = 'data/bottlenecks'
 if not os.path.exists(bottleneck_root):
     os.makedirs(bottleneck_root)
 
-categories = loader.list_image_sets()
+categories = train_loader.list_image_sets() # same
 num_classes = len(categories)
 batch_size = 64
 valid_batch_size = 4
@@ -54,7 +58,7 @@ MODEL_INPUT_WIDTH = 224
 MODEL_INPUT_HEIGHT = 224
 MODEL_INPUT_DEPTH = 3
 
-train_iters = int(4e3)
+train_iters = int(10e3)
 split_ratio = 0.85
 learning_rate = 5e-4
 
@@ -168,27 +172,7 @@ class Distorter(object):
                 break
         return d_im, d_bb, d_lbl
 
-def ann2bbox(ann, categories):
-    width = int(ann.findChild('width').contents[0])
-    height = int(ann.findChild('height').contents[0])
-    objs = ann.findAll('object')
-
-    bbox = []
-    labels = []
-
-    for obj in objs:
-        label = categories.index(obj.findChild('name').contents[0])
-        labels.append(label)
-        box = obj.findChild('bndbox')
-        y_min = float(box.findChild('ymin').contents[0]) / height
-        x_min = float(box.findChild('xmin').contents[0]) / width
-        y_max = float(box.findChild('ymax').contents[0]) / height
-        x_max = float(box.findChild('xmax').contents[0]) / width
-        bbox.append([y_min,x_min,y_max,x_max])
-
-    return np.asarray(bbox, dtype=np.float32), np.asarray(labels, dtype=np.int32)
-
-def dwc(inputs, num_out, scope, stride=1, output_activation_fn=tf.nn.relu):
+def dwc(inputs, num_out, scope, stride=1, output_activation_fn=tf.nn.elu):
     dc = slim.separable_conv2d(inputs,
             num_outputs=None,
             stride=stride,
@@ -229,7 +213,6 @@ def extended_ops(input_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor,
             for i, t in enumerate(input_tensors):
                 h,w = t.get_shape().as_list()[1:3]
                 with tf.variable_scope('box_%d' % i):
-                    #logits = slim.conv2d(t, num_boxes * (num_classes+4), kernel_size=[3,3])
                     logits = dwc(t, 256, scope='b_dwc_1')
                     logits = dwc(logits, 128, scope='b_dwc_2') # deeper?
                     logits = dwc(logits, num_boxes * (num_classes+4), scope='b_dwc_3', output_activation_fn=None)
@@ -288,10 +271,9 @@ def get_or_create_bottlenecks(sess, bottleneck_tensors, image, loader, anns, bat
             print '%d ) %s' % (i, ann)
 
         ### GRAB DATA ###
-        btl_file = os.path.join(bottleneck_root, ann + '_btl.npz')
+        btl_file = os.path.join(bottleneck_root, str(ann) + '_btl.npz')
 
-        img_file, ann = loader.grab_pair(ann)
-        box, lbl = ann2bbox(ann, categories)
+        img_file, box, lbl = loader.grab(ann)
 
         if all or not os.path.exists(btl_file):
             # TODO : currently disabled btl
@@ -435,12 +417,17 @@ def main(_):
 
             merged = tf.summary.merge_all()
 
-            anns = loader.list_all()
-            np.random.shuffle(anns)
-            n = len(anns)
-            sp = int(n * split_ratio)
-            anns_train = anns[:sp]
-            anns_valid = anns[sp:]
+            anns_train = train_loader.list_all()
+            anns_valid = valid_loader.list_all()
+
+            np.random.shuffle(anns_train)
+            np.random.shuffle(anns_valid)
+
+            # if given only one dataset:
+            #n = len(anns)
+            #sp = int(n * split_ratio)
+            #anns_train = anns[:sp]
+            #anns_valid = anns[sp:]
 
             # cache call - comment when run once
             #get_or_create_bottlenecks(sess, bottleneck_tensor, image, loader, anns, df_boxes, batch_size=-1)
@@ -449,7 +436,7 @@ def main(_):
                 if stop_request:
                     break
 
-                btls, boxs, spls, lbls = get_or_create_bottlenecks(sess, bottleneck_tensors, image, loader, anns_train, batch_size)
+                btls, boxs, spls, lbls = get_or_create_bottlenecks(sess, bottleneck_tensors, image, train_loader, anns_train, batch_size)
                 # apply distortions to image with 1/2 probability
 
                 ## CREATE FEED DICT ##
@@ -466,7 +453,7 @@ def main(_):
                 train_writer.add_summary(s, i)
 
                 if i % 20 == 0: # -- evaluate
-                    btls, boxs, spls, lbls = get_or_create_bottlenecks(sess, bottleneck_tensors, image, loader, anns_valid, batch_size)
+                    btls, boxs, spls, lbls = get_or_create_bottlenecks(sess, bottleneck_tensors, image, valid_loader, anns_valid, batch_size)
                     feed_dict = {
                             btl : btl_in for (btl,btl_in) in zip(input_tensors, btls)
                             }

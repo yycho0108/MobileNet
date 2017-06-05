@@ -10,6 +10,7 @@ import numpy as np
 import cv2
 
 from timer import Timer
+from coco_utils import COCOLoader
 
 def str2bool(v):
     if v.lower() in ('yes', 'true', 't', 'y', '1'):
@@ -166,14 +167,19 @@ def main(argv):
       is_training = sess.graph.get_tensor_by_name('is_training:0')
 
       # processing tensors
-      idx_t = tf.image.non_max_suppression(box_t, val_t, max_output_size=10, iou_threshold=0.45) # collect best boxes
+      idx_t = tf.image.non_max_suppression(box_t, val_t, max_output_size=200, iou_threshold=0.25) # collect best boxes
       box_t, cls_t, val_t = [tf.gather(t, idx_t) for t in [box_t, cls_t, val_t]]
 
       cv2.namedWindow('frame')
       cv2.moveWindow('frame', 50, 50)
+      #cap = cv2.VideoCapture(0)
 
-      def run(image_path):
-          image_data = load_image(image_path)
+      #for _ in range(10):
+      #    _, image_data = cap.read()
+
+      def run(frame):
+          image_data = frame[...,::-1]/255.0
+
           with Timer('Detection'):
               #run_metadata = tf.RunMetadata()
     
@@ -193,7 +199,6 @@ def main(argv):
           #print len(best_idx)
           #print best_idx
 
-          frame = cv2.imread(image_path)
           H,W,_ = frame.shape
           lab_frame = np.zeros((7,7,3), dtype=np.uint8)
 
@@ -205,15 +210,29 @@ def main(argv):
               y = int((b[0]+b[2])*H/2)
               w = int((b[3]-b[1])*W)
               h = int((b[2]-b[0])*H)
-              print 'x,y', x,y
               putText(frame, (x,y), labels[c])
               cv2.rectangle(frame, (x-w//2,y-h//2), (x+w//2,y+h//2), (255,0,0), 2)
           cv2.imshow('frame', frame)
 
-          if cv2.waitKey(0) == 27:
-              return False
+      coco_root = os.getenv('COCO_ROOT')
+      coco_type = 'train2014' #TODO : change to val2014 ...
+      coco = COCOLoader(coco_root, coco_type)
+      print coco.list_image_sets()
+      l = list(coco.list_all())
+      np.random.shuffle(l)
 
-          return True
+      for img_id in l:
+          print img_id, type(img_id)
+          frame, boxs, lbls = coco.grab_pair(img_id)
+          print lbls
+          h,w = frame.shape[:2]
+          for box in boxs:
+              y1,x1,y2,x2 = [int(b*s) for (b,s) in zip(box, [h,w,h,w])]
+              cv2.rectangle(frame, (x1,y1), (x2,y2), (0,0,255), 1)
+          run(frame.copy())
+          cv2.imshow('truth', frame)
+          if (cv2.waitKey(0) == 27) or (not FLAGS.loop):
+              break
 
       if FLAGS.loop:
           i = 0

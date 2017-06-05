@@ -338,10 +338,10 @@ def train(output, iou, sel, cls, loc, num_classes, pos_neg_ratio=3.0, alpha = 1.
         pos_loss = tf.where(n_pos>0, tf.reduce_sum(pos_loss)/(n_pos + batch_size), 0)
         tf.summary.scalar('pos', pos_loss)
         tf.losses.add_loss(pos_loss)
-        neg_loss = 5 * tf.where(k>0, tf.reduce_sum(neg_loss)/tf.cast(k + batch_size,tf.float32), 0)
+        neg_loss = 2 * tf.where(k>0, tf.reduce_sum(neg_loss)/tf.cast(k + batch_size,tf.float32), 0)
         tf.summary.scalar('neg', neg_loss)
         tf.losses.add_loss(neg_loss)
-        loc_loss = 50 * tf.where(n_pos>0, tf.reduce_sum(loc_loss)/(n_pos + batch_size), 0)
+        loc_loss = 10 * tf.where(n_pos>0, tf.reduce_sum(loc_loss)/(n_pos + batch_size), 0)
         tf.summary.scalar('loc', loc_loss)
         tf.losses.add_loss(loc_loss)
 
@@ -350,21 +350,21 @@ def train(output, iou, sel, cls, loc, num_classes, pos_neg_ratio=3.0, alpha = 1.
     acc_clf = tf.cast(tf.logical_and(tf.equal(tf.cast(y_pred, tf.int32), cls),p_mask), tf.float32)
     acc_pos = tf.cast(tf.logical_and(p_mask, y_conf > conf_thresh), tf.float32)
     acc_neg = tf.cast(tf.logical_and(n_mask, y_conf < conf_thresh), tf.float32)
-    acc_obj = tf.cast(tf.equal(n_mask, y_conf < conf_thresh),  tf.float32)
+    #acc_obj = tf.cast(tf.equal(n_mask, y_conf < conf_thresh),  tf.float32)
 
-    with tf.name_scope('counts'):
-        tf.summary.scalar('n_pos', n_pos)
-        tf.summary.scalar('n_neg', n_neg)
-        tf.summary.scalar('k', k)
+    #with tf.name_scope('counts'):
+    #    tf.summary.scalar('n_pos', n_pos)
+    #    tf.summary.scalar('n_neg', n_neg)
+    #    tf.summary.scalar('k', k)
 
-    with tf.name_scope('debug_acc'):
+    with tf.name_scope('acc'):
         tf.summary.scalar('acc_clf', tf.reduce_sum(acc_clf) / n_pos)
         tf.summary.scalar('acc_pos', tf.reduce_sum(acc_pos) / n_pos)
         tf.summary.scalar('acc_neg', tf.reduce_sum(acc_neg) / n_neg)
-        tf.summary.scalar('acc_obj', tf.reduce_sum(acc_obj) / n_neg)
+        #tf.summary.scalar('acc_obj', tf.reduce_sum(acc_obj) / n_neg)
     ######################
 
-    acc_mask = tf.where(p_mask, acc_clf, acc_obj)
+    acc_mask = tf.where(p_mask, acc_clf, acc_neg)
     acc = tf.reduce_mean(tf.cast(acc_mask, tf.float32))
 
     return acc

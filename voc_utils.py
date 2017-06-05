@@ -13,6 +13,26 @@ img_dir = os.path.join(root_dir, 'JPEGImages/')
 ann_dir = os.path.join(root_dir, 'Annotations')
 set_dir = os.path.join(root_dir, 'ImageSets', 'Main')
 
+def ann2bbox(ann, categories):
+    width = int(ann.findChild('width').contents[0])
+    height = int(ann.findChild('height').contents[0])
+    objs = ann.findAll('object')
+
+    bbox = []
+    labels = []
+
+    for obj in objs:
+        label = categories.index(obj.findChild('name').contents[0])
+        labels.append(label)
+        box = obj.findChild('bndbox')
+        y_min = float(box.findChild('ymin').contents[0]) / height
+        x_min = float(box.findChild('xmin').contents[0]) / width
+        y_max = float(box.findChild('ymax').contents[0]) / height
+        x_max = float(box.findChild('xmax').contents[0]) / width
+        bbox.append([y_min,x_min,y_max,x_max])
+
+    return np.asarray(bbox, dtype=np.float32), np.asarray(labels, dtype=np.int32)
+
 class VOCLoader(object):
     def __init__(self, root_dir):
         self.root_dir = root_dir
@@ -50,14 +70,15 @@ class VOCLoader(object):
         img_file = annot.findChild('filename').contents[0]
         return os.path.join(self.img_dir, img_file)
 
-    def grab_pair(self, basename):
+    def grab(self, basename):
         img_name = os.path.join(self.img_dir, basename + '.jpg')
         xml = ""
         with open(os.path.join(self.ann_dir, basename + '.xml')) as f:
             xml = f.readlines()
         xml = ''.join([line.strip('\t') for line in xml])
         ann = BeautifulSoup(xml)
-        return img_name, ann
+        box, lbl = ann2bbox(ann, categories)
+        return img_name, box, lbl
 
     def load_annotation(self, img_filename):
         """
