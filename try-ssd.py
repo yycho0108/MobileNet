@@ -202,7 +202,7 @@ def dwc(inputs, num_out, scope, stride=1):
     return pc
 
 def extended_ops(input_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor, num_classes, is_training=True, reuse=None):
-    with tf.name_scope('extended_ops') as sc:
+    with tf.variable_scope('extended_ops') as sc:
         with slim.arg_scope([slim.conv2d, slim.separable_convolution2d],
                 activation_fn=tf.nn.relu,
                 weights_regularizer=slim.l2_regularizer(0.005),
@@ -244,20 +244,20 @@ def extended_ops(input_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor,
 
             def s(i):
                 return s_min + (s_max - s_min) / (n-1) * (i)
-
-            for i, logits in enumerate(output_tensors):
-                s_k = s(i)
-                s_kn = s(i+1) 
-                w = np.sqrt(s_kn/s_k)
-                d_box = np.reshape(ssd.default_box(logits, box_ratios, scale=s_k, wildcard=w), (-1,4))
-                iou, sel, cls, delta = ssd.create_label_tf(gt_box_tensor, gt_split_tensor, gt_label_tensor, d_box)
-                acc = ssd.train(logits, iou, sel, cls, delta, num_classes = num_classes)
-                d_boxes.append(d_box)
-                net_acc.append(acc)
-
-            acc = tf.reduce_mean(net_acc)
-
-            pred_box, pred_cls, pred_val = ssd.pred(output_tensors, d_boxes, num_classes=num_classes, num_boxes=num_boxes, iou_threshold=0.5)
+            with tf.name_scope('train'):
+                for i, logits in enumerate(output_tensors):
+                    s_k = s(i)
+                    s_kn = s(i+1) 
+                    w = np.sqrt(s_kn/s_k)
+                    d_box = np.reshape(ssd.default_box(logits, box_ratios, scale=s_k, wildcard=w), (-1,4))
+                    d_box = tf.constant(d_box, tf.float32)
+                    iou, sel, cls, delta = ssd.create_label_tf(gt_box_tensor, gt_split_tensor, gt_label_tensor, d_box)
+                    acc = ssd.train(logits, iou, sel, cls, delta, num_classes = num_classes)
+                    d_boxes.append(d_box)
+                    net_acc.append(acc)
+                acc = tf.reduce_mean(net_acc)
+            with tf.name_scope('pred'):
+                pred_box, pred_cls, pred_val = ssd.pred(output_tensors, d_boxes, num_classes=num_classes)
 
     return {
             'box' : tf.identity(pred_box, name='pred_box'),
@@ -392,9 +392,9 @@ def main(_):
                     'MobileNet/conv_ds_14/pw_batch_norm/Relu:0'
                     ]
 
-            bottleneck_tensors = [tf.stop_gradient(sess.graph.get_tensor_by_name(b)) for b in bottleneck_names]
+            bottleneck_tensors = [sess.graph.get_tensor_by_name(b) for b in bottleneck_names]
 
-            input_tensors = [tf.placeholder_with_default(b, shape=[None] + b.get_shape().as_list()[1:]) for b in bottleneck_tensors]
+            input_tensors = [tf.placeholder_with_default(b, shape=[None] + b.get_shape().as_list()[1:], name=('input_%d_t' % i)) for (i, b) in enumerate(bottleneck_tensors)]
 
             gt_boxes = tf.placeholder(tf.float32, (None, 4)) # ground truth boxes
             gt_splits = tf.placeholder(tf.int32, [batch_size]) # # ground truth boxes per sample
@@ -412,7 +412,8 @@ def main(_):
             update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
             with tf.control_dependencies(update_ops):
                 opt = tf.train.AdamOptimizer(learning_rate = learning_rate)#.minimize(train['loss'])
-                opt = slim.learning.create_train_op(loss, opt)
+                train_vars = slim.get_trainable_variables(scope='extended_ops')
+                opt = slim.learning.create_train_op(loss, opt, variables_to_train=train_vars)
             ####################
 
             sess.run(tf.global_variables_initializer())
@@ -421,6 +422,7 @@ def main(_):
             saver.restore(sess, input_ckpt_path)
 
             total_saver = tf.train.Saver() # -- save all
+            #total_saver.restore(sess, output_ckpt_path)
 
             run_id = 'run_%02d' % len(os.walk(log_root).next()[1])
             run_log_root = os.path.join(log_root, run_id)
@@ -436,7 +438,7 @@ def main(_):
             sp = int(n * split_ratio)
             anns_train = anns[:sp]
             anns_valid = anns[sp:]
-            
+
             # cache call - comment when run once
             #get_or_create_bottlenecks(sess, bottleneck_tensor, image, loader, anns, df_boxes, batch_size=-1)
 

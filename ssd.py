@@ -117,14 +117,6 @@ def create_label(gt_boxes, gt_labels, l_d_boxes, n_classes):
 
     return l_label
 
-#def overlap(a, b):
-#    a_y1,a_x1,a_y2,a_x2 = a
-#    b_y1,b_x1,b_y2,b_x2 = b
-#    return max(0, min(a_x2,b_x2) - max(a_x1,b_x1)) * max(0, min(a_y2,b_y2) - max(a_y1,b_y1))
-
-def gather_axis(params, indices, axis=0):
-    return tf.stack(tf.unstack(tf.gather(tf.unstack(params, axis=axis), indices)), axis=axis)
-
 def create_label_tf(gt_boxes, gt_split_tensor, gt_label_tensor, d_box):
     # b = batch_size
     # n = # gt boxes
@@ -142,7 +134,7 @@ def create_label_tf(gt_boxes, gt_split_tensor, gt_label_tensor, d_box):
     #print 'c0', np.sum((d_box[:,2] - d_box[:,0]) == 0)
     #print 'c1', np.sum((d_box[:,3] - d_box[:,1]) == 0)
 
-    d_box = tf.constant(d_box, tf.float32)#np.reshape(default_box(output_tensor, box_ratios), (-1,4)), tf.float32)
+    #d_box = tf.constant(d_box, tf.float32)
 
     lr = tf.maximum(
             tf.minimum(gt_boxes[:,3], d_box[:,3,None]) -
@@ -219,6 +211,7 @@ def create_label_tf(gt_boxes, gt_split_tensor, gt_label_tensor, d_box):
     dx = (dx1+dx2)/2
     #dw = (dx2-dx1) # TODO _ FIX?
     #dh = (dy2-dy1)
+    
     a0 = tf.assert_greater(d_box[:,3] - d_box[:,1], 0.0)
     a1 = tf.assert_greater(d_box[:,2] - d_box[:,0], 0.0)
     with tf.control_dependencies([a0,a1]):
@@ -237,7 +230,7 @@ def smooth_l1(x):
 
     return tf.reduce_mean(re, axis=-1)
 
-def pred(output_tensors, df_boxes, num_classes, num_boxes, max_output_size=200, iou_threshold=0.5): # --> NOT per tensor
+def pred(output_tensors, df_boxes, num_classes): # --> NOT per tensor
 
     s_boxes = []
     s_cls = []
@@ -254,10 +247,10 @@ def pred(output_tensors, df_boxes, num_classes, num_boxes, max_output_size=200, 
         pred_cls = tf.reshape(tf.argmax(cls, axis=-1), [-1]) # [b,h,w,n]
         pred_val = tf.reshape(tf.reduce_max(cls, axis=-1), [-1])
 
-        box = np.reshape(box, (-1, 4))
+        box = tf.reshape(box, (-1, 4))
         out_box = tf.reshape(out_box, (b, -1,4))
 
-        y1,x1,y2,x2 = np.transpose(box)
+        y1,x1,y2,x2 = tf.unstack(box, axis=1)
 
         dy,dx,dh,dw = tf.unstack(out_box, axis=-1)
 
@@ -276,13 +269,11 @@ def pred(output_tensors, df_boxes, num_classes, num_boxes, max_output_size=200, 
         s_cls.append(pred_cls)
         s_val.append(pred_val)
 
-    s_boxes = tf.concat(s_boxes, axis=0)
-    s_cls = tf.concat(s_cls, 0)
-    s_val = tf.concat(s_val, 0)
+    s_boxes = tf.concat(s_boxes, axis=0, name='boxes_concat')
+    s_cls = tf.concat(s_cls, axis=0, name='cls_concat')
+    s_val = tf.concat(s_val, axis=0, name='val_concat')
+
     return s_boxes, s_cls, s_val
-    #with tf.control_dependencies([tf.assert_equal(tf.shape(s_boxes)[0], tf.shape(s_cls)[0])]):
-    #idx = tf.image.non_max_suppression(s_boxes, s_val, max_output_size = max_output_size, iou_threshold=iou_threshold)
-    #return tf.gather(s_boxes, idx), tf.gather(s_cls, idx), tf.gather(s_val, idx)
 
 def train(output, iou, sel, cls, loc, num_classes, pos_neg_ratio=3.0, alpha = 1.0, conf_thresh = 0.5): # --> per tensor
     # output should be something like
@@ -336,9 +327,7 @@ def train(output, iou, sel, cls, loc, num_classes, pos_neg_ratio=3.0, alpha = 1.
     #neg_logits = tf.one_hot(tf.cast(y_conf < conf_thresh,tf.int32), 2) # 1=neg, 0=pos
     neg_logits = tf.stack([y_conf, 1-y_conf], axis=-1) # class 0 : pos, class 1 : neg
     neg_labels = tf.cast(n_mask, tf.int32) # class 0 : pos, class 1 : neg
-    neg_loss = (num_classes/2.0) * tf.nn.sparse_softmax_cross_entropy_with_logits(logits=neg_logits, labels=neg_labels) * sub_n_mask_f
-    # pos loss has num_classes classes, neg_loss only has 2
-    # needs to be scaled accordingly
+    neg_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=neg_logits, labels=neg_labels) * sub_n_mask_f
 
     loc_loss = 50 * smooth_l1(y_loc - loc) * p_mask_f
     #loc_loss = tf.nn.l2_loss(y_loc - loc) * p_mask_f

@@ -67,11 +67,12 @@ def load_graph(filename):
     graph_def.ParseFromString(f.read())
     tf.import_graph_def(graph_def, name='')
 
+from tensorflow.python.client import timeline
 
 def run_graph(sess, image_data, labels, input_layer_name, output_names,
               num_top_predictions):
-    #for op in sess.graph.get_operations():
-    #    print('op', op.name)
+    for op in sess.graph.get_operations():
+        print('op', op.name)
     # Feed the image_data as input to the graph.
     #   predictions  will contain a two-dimensional array, where one
     #   dimension represents the input image count, and the other has
@@ -79,36 +80,32 @@ def run_graph(sess, image_data, labels, input_layer_name, output_names,
     box_t, cls_t, val_t = [sess.graph.get_tensor_by_name(o) for o in output_names]
     #print cls_t
     #filter_t = tf.cast(tf.equal(cls_t, 14), tf.float32) # --> person
-    idx_t = tf.image.non_max_suppression(box_t, val_t, max_output_size=10, iou_threshold=0.10)
-    s_box, s_cls, s_val = tf.gather(box_t, idx_t), tf.gather(cls_t, idx_t), tf.gather(val_t, idx_t)
+
+    # filter out meaningless boxes
+
+    idx_t = tf.reshape(tf.where(tf.greater(val_t, tf.constant(0.1))), [-1])
+    box_t, cls_t, val_t = [tf.gather(t, idx_t) for t in [box_t, cls_t, val_t]]
+
+    #idx_t = tf.image.non_max_suppression(box_t, val_t, max_output_size=10, iou_threshold=0.25)
+    #box_t, cls_t, val_t = tf.gather(box_t, idx_t), tf.gather(cls_t, idx_t), tf.gather(val_t, idx_t)
 
     is_training = sess.graph.get_tensor_by_name('is_training:0')
-    box, cls, val = sess.run([s_box, s_cls, s_val], {input_layer_name: image_data, is_training : False})
+
+    run_metadata = tf.RunMetadata()
+    with Timer('Run-Only'):
+        box, cls, val = sess.run([box_t, cls_t, val_t], {input_layer_name: image_data, is_training : False},
+                options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE),
+                run_metadata = run_metadata)
+    
+    trace = timeline.Timeline(step_stats = run_metadata.step_stats)
+    ctf = trace.generate_chrome_trace_format()
+    with open('timeline.json', 'w') as f:
+        f.write(ctf)
+
     #box, cls, val = sess.run([box_t, cls_t, val_t], {input_layer_name: image_data, is_training : False})
-    print box[0], cls[0], val
+    #print box[0], cls[0], val
 
     return box, cls, val
-
-    #pred_lab = np.argmax(predictions, 2)
-    #pred_val = np.max(predictions, 2)
-    #
-    ## Sort to show labels in order of confidence
-    #k = np.bincount(pred_lab.flatten(),minlength=21)
-
-    #top_k = np.argsort(k)[-num_top_predictions:]
-
-    #pred_lab[pred_val < 0.10] = 20 # == background
-
-    #print('Top %d : ' % num_top_predictions)
-    #for node_id in reversed(top_k):
-    #    human_string = labels[node_id]
-    #    vals = pred_val[pred_lab == node_id]
-    #    if len(vals) <= 0:
-    #        break
-    #    score = np.max(pred_val[pred_lab == node_id]) #/ np.sum(pred_val)
-    #    print('\t %s (score = %.5f)' % (human_string, score))
-    ### visualization
-    #return pred_lab, pred_val, top_k
 
 def resize(in_frame, h, w):
 
@@ -154,12 +151,12 @@ def main(argv):
   for i in range(20):
       color = np.squeeze(cv2.cvtColor(np.asarray([[[i * 8, 255, 255]]],dtype=np.uint8), cv2.COLOR_HSV2BGR))
       colors.append([int(c) for c in color])
-  #for i in range(10):
-  #    color = np.squeeze(cv2.cvtColor(np.asarray([[[i * 18, 255, 255]]],dtype=np.uint8), cv2.COLOR_HSV2BGR))
-  #    colors.append([int(c) for c in color])
   colors.append(WHITE)
+  
+  gpu_options = tf.GPUOptions(allow_growth=True, per_process_gpu_memory_fraction=0.5)
+  config = tf.ConfigProto(log_device_placement=False, gpu_options=gpu_options)
 
-  with tf.Session() as sess:
+  with tf.Session(config=config) as sess:
 
       # load labels
       labels = load_labels(FLAGS.labels) + ['background']
@@ -185,22 +182,17 @@ def main(argv):
 
           print [labels[c] for c in cls[:num]]
 
-          drawn = sess.run(tf.image.draw_bounding_boxes(np.expand_dims(frame,0), np.expand_dims(box[:num],0)))[0]
-          print 'ds', drawn.shape
-          
+          #drawn = sess.run(tf.image.draw_bounding_boxes(np.expand_dims(frame,0), np.expand_dims(box[:num],0)))[0]
           for c,b in zip(cls[:num], box[:num]):
               x = int((b[1]+b[3])*W/2)
               y = int((b[0]+b[2])*H/2)
               w = int((b[3]-b[1])*W)
               h = int((b[2]-b[0])*H)
               print 'x,y', x,y
-              putText(drawn, (x,y), labels[c])
               putText(frame, (x,y), labels[c])
               cv2.rectangle(frame, (x-w//2,y-h//2), (x+w//2,y+h//2), (255,0,0), 2)
 
-
           cv2.imshow('frame', frame)
-          cv2.imshow('drawn', drawn)
 
           if cv2.waitKey(0) == 27:
               return False
