@@ -203,20 +203,25 @@ def create_label_tf(gt_boxes, gt_split_tensor, gt_label_tensor, d_box):
     # gt_boxes == [64,294,4]
     # d_box == [294,4]
 
-    delta = tf.subtract(gt_boxes, d_box[None,:,:])
+    d_box = tf.expand_dims(d_box, axis=0) # apply to each batch
+
+    delta = tf.subtract(gt_boxes, d_box)
 
     dy1, dx1, dy2, dx2 = tf.unstack(delta, axis=-1)
 
-    dy = (dy1+dy2)/2
+    dy = (dy1+dy2)/2 # todo : consider dividing dy by h, as from SSD-Tensorflow
     dx = (dx1+dx2)/2
-    #dw = (dx2-dx1) # TODO _ FIX?
-    #dh = (dy2-dy1)
-    
-    a0 = tf.assert_greater(d_box[:,3] - d_box[:,1], 0.0)
-    a1 = tf.assert_greater(d_box[:,2] - d_box[:,0], 0.0) # without these, tensorflow would simply segfault??
-    with tf.control_dependencies([a0,a1]):
-        dw = tf.log(tf.div(gt_boxes[:,:,3] - gt_boxes[:,:,1], d_box[None,:,3] - d_box[None,:,1]))
-        dh = tf.log(tf.div(gt_boxes[:,:,2] - gt_boxes[:,:,0], d_box[None,:,2] - d_box[None,:,0]))
+
+    cw = d_box[:,:,3] - d_box[:,:,1] # cell width (for default box)
+    ch = d_box[:,:,2] - d_box[:,:,0] # cell height 
+
+    i_cw = tf.constant(1.0, dtype=tf.float32) / cw # inverse
+    i_ch = tf.constant(1.0, dtype=tf.float32) / ch
+
+    dw = tf.log(tf.multiply(gt_boxes[:,:,3] - gt_boxes[:,:,1], i_cw))
+    dh = tf.log(tf.multiply(gt_boxes[:,:,2] - gt_boxes[:,:,0], i_ch))
+    dx = tf.multiply(dx, i_cw)
+    dy = tf.multiply(dy, i_ch)
     
     loc = tf.stack([dy,dx,dw,dh], axis=-1)
     return tf.stack(iou, axis=0),  sel, cls, loc 
@@ -259,7 +264,7 @@ def pred(output_tensors, df_boxes, num_classes): # --> NOT per tensor
         cx,cy = (x1+x2)/2, (y1+y2)/2
         w,h = (x2-x1), (y2-y1)
 
-        x,y = cx+dx, cy+dy
+        x,y = cx + (w * dx), cy + (h * dy)
         w,h = w * dw, h * dw
         y1,x1,y2,x2 = (y-h/2),(x-w/2),(y+h/2),(x+w/2)
 

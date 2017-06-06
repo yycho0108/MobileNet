@@ -6,6 +6,7 @@ import tensorflow as tf
 
 from tensorflow.python.framework import graph_util
 from tensorflow.python.platform import gfile
+#from tensorflow.python import debug as tf_debug
 
 import numpy as np
 import cv2
@@ -60,8 +61,8 @@ train_iters = int(4e3)
 #split_ratio = 0.85
 
 # Learning Rate Params
-init_learning_rate = 1e-3
-min_learning_rate = 1e-4
+init_learning_rate = 1e-4
+min_learning_rate = 1e-5
 num_samples = len(voc_loader.list_all()) + len(train_loader.list_all()) # = 83968
 steps_per_epoch = num_samples / batch_size # or thereabout.
 epochs_per_decay = 0.5
@@ -281,6 +282,7 @@ def main(_):
         #config = tf.ConfigProto(log_device_placement=False, gpu_options=gpu_options)
 
         with tf.Session() as sess:
+            #sess = tf_debug.LocalCLIDebugWrapperSession(sess)
 
             ### DEFINE MODEL ###
             bottleneck_names = [ # source bottleneck
