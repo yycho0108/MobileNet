@@ -285,7 +285,7 @@ def pred(output_tensors, df_boxes, num_classes): # --> NOT per tensor
 
     return s_box, s_cls, s_val
 
-def train(output, iou, sel, cls, loc, num_classes, pos_neg_ratio=3.0, conf_thresh = 0.5): # --> per tensor
+def ops(output, iou, sel, cls, loc, num_classes, is_training=True, pos_neg_ratio=3.0, conf_thresh = 0.5): # --> per tensor
     # output should be something like
     # [b, m, 4 + num_classes]
     # each default box gets matched to best gt box?
@@ -344,19 +344,22 @@ def train(output, iou, sel, cls, loc, num_classes, pos_neg_ratio=3.0, conf_thres
     loc_loss = smooth_l1(y_loc - loc) * p_mask_f
     #loc_loss = alpha * tf.nn.l2_loss(y_loc - t_loc) * p_mask_f
 
+    sum_col = [tf.GraphKeys.SUMMARIES if is_training else 'valid_summary']
+    loss_col = tf.GraphKeys.LOSSES if is_training else 'valid_loss'
+
     with tf.name_scope('losses'):
         # incorrect classification
         pos_loss = tf.where(n_pos>0, tf.reduce_sum(pos_loss)/(n_pos + batch_size), 0)
-        tf.summary.scalar('pos', pos_loss)
-        tf.losses.add_loss(pos_loss)
+        tf.summary.scalar('pos', pos_loss, collections = sum_col)
+        tf.losses.add_loss(pos_loss, loss_collection = loss_col)
         # incorrect identification (detection)
         neg_loss = tf.where(k>0, tf.reduce_sum(neg_loss)/tf.cast(k + batch_size,tf.float32), 0)
-        tf.summary.scalar('neg', neg_loss)
-        tf.losses.add_loss(neg_loss)
+        tf.summary.scalar('neg', neg_loss, collections = sum_col)
+        tf.losses.add_loss(neg_loss, loss_collection = loss_col)
         # incorrect localization
         loc_loss = 20 * tf.where(n_pos>0, tf.reduce_sum(loc_loss)/(n_pos + batch_size), 0)
-        tf.summary.scalar('loc', loc_loss)
-        tf.losses.add_loss(loc_loss)
+        tf.summary.scalar('loc', loc_loss, collections = sum_col)
+        tf.losses.add_loss(loc_loss, loss_collection = loss_col)
 
     ### DEBUGGING INFO ###
     acc_clf = tf.cast(tf.logical_and(tf.equal(tf.cast(y_pred, tf.int32), cls),p_mask), tf.float32)
@@ -369,9 +372,9 @@ def train(output, iou, sel, cls, loc, num_classes, pos_neg_ratio=3.0, conf_thres
     #    tf.summary.scalar('k', k)
 
     with tf.name_scope('acc'):
-        tf.summary.scalar('acc_clf', tf.reduce_sum(acc_clf) / n_pos)
-        tf.summary.scalar('acc_pos', tf.reduce_sum(acc_pos) / n_pos)
-        tf.summary.scalar('acc_neg', tf.reduce_sum(acc_neg) / n_neg)
+        tf.summary.scalar('acc_clf', tf.reduce_sum(acc_clf) / n_pos, collections = sum_col)
+        tf.summary.scalar('acc_pos', tf.reduce_sum(acc_pos) / n_pos, collections = sum_col)
+        tf.summary.scalar('acc_neg', tf.reduce_sum(acc_neg) / n_neg, collections = sum_col)
     ######################
 
     acc_mask = tf.where(p_mask, acc_clf, acc_neg)

@@ -197,7 +197,7 @@ def main(argv):
               #with open('timeline.json', 'w') as f:
               #    f.write(ctf)
 
-          good_idx = (val > 0.5)
+          good_idx = (val > 0.75)
           num = max(1, min(10, np.count_nonzero(good_idx)))
           #best_idx = np.argsort(val)[-num:]
           #print num
