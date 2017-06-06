@@ -165,7 +165,7 @@ def main(argv):
 
       # grab tensors
       box_t, cls_t, val_t = [sess.graph.get_tensor_by_name(o) for o in output_names]
-      idx_t = tf.reshape(tf.where(val_t > 0.5), [-1])
+      idx_t = tf.reshape(tf.where(val_t > 0.05), [-1])
       box_t, cls_t, val_t = [tf.gather(t, idx_t) for t in [box_t, cls_t, val_t]]
       input_tensor = sess.graph.get_tensor_by_name('input:0')
       is_training = sess.graph.get_tensor_by_name('is_training:0')
@@ -197,7 +197,7 @@ def main(argv):
               #with open('timeline.json', 'w') as f:
               #    f.write(ctf)
 
-          good_idx = (val > 0.8)
+          good_idx = (val > 0.75)
           num = max(1, min(10, np.count_nonzero(good_idx)))
           #best_idx = np.argsort(val)[-num:]
           #print num
@@ -219,12 +219,14 @@ def main(argv):
               cv2.rectangle(frame, (x-w//2,y-h//2), (x+w//2,y+h//2), (255,0,0), 2)
           cv2.imshow('frame', frame)
 
-      #coco_root = os.getenv('COCO_ROOT')
-      #coco_type = 'val2014'
-      #loader = COCOLoader(coco_root, coco_type)
-      voc_root = os.getenv('VOC_ROOT')
-      loader = VOCLoader(voc_root)
-      print loader.list_image_sets()
+      coco_root = os.getenv('COCO_ROOT')
+      coco_type = 'val2014'
+      loader = COCOLoader(coco_root, coco_type)
+
+      #voc_root = os.getenv('VOC_ROOT')
+      #loader = VOCLoader(voc_root)
+
+      #print loader.list_image_sets()
       l = list(loader.list_all())
       np.random.shuffle(l)
 

@@ -299,6 +299,9 @@ def train(output, iou, sel, cls, loc, num_classes, pos_neg_ratio=3.0, conf_thres
     #print 'os', output.shape # [b, m, 24]
 
     y_loc, y_cls = tf.split(output, [4, num_classes], axis=2) # TODO : -1 may not work?
+
+    y_loc = tf.nn.tanh(y_loc) # map to -1 ~ 1, which is appropriate for dx and dy ; probably dw and dh as well.
+
     # y_loc= [bs, m, 4]
     # y_cls = [bs, m, 20]
 
@@ -346,7 +349,7 @@ def train(output, iou, sel, cls, loc, num_classes, pos_neg_ratio=3.0, conf_thres
         tf.summary.scalar('neg', neg_loss)
         tf.losses.add_loss(neg_loss)
         # incorrect localization
-        loc_loss = 6 * tf.where(n_pos>0, tf.reduce_sum(loc_loss)/(n_pos + batch_size), 0)
+        loc_loss = 20 * tf.where(n_pos>0, tf.reduce_sum(loc_loss)/(n_pos + batch_size), 0)
         tf.summary.scalar('loc', loc_loss)
         tf.losses.add_loss(loc_loss)
 

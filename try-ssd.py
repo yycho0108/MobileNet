@@ -31,9 +31,7 @@ slim = tf.contrib.slim
 #   PARAMETERS  #
 #################
 input_ckpt_path = './data/model.ckpt-906808'
-#input_ckpt_path = 'data/train/model.ckpt'
 
-#bottleneck_name = 'MobileNet/conv_ds_14/pw_batch_norm/Relu:0'
 output_graph_path = 'data/train/output_graph.pb'
 output_labels_path = 'data/train/labels.txt'
 output_ckpt_path = 'data/train/model.ckpt'
@@ -62,13 +60,14 @@ train_iters = int(4e3)
 #split_ratio = 0.85
 
 # Learning Rate Params
-learning_rate = 1e-3
+init_learning_rate = 1e-3
 min_learning_rate = 1e-4
 num_samples = len(voc_loader.list_all()) + len(train_loader.list_all()) # = 83968
 steps_per_epoch = num_samples / batch_size # or thereabout.
-num_epochs_per_decay = 0.5
-decay_interval = train_iters / (num_epochs_per_decay * steps_per_epoch)
-decay_factor = (min_learning_rate / learning_rate) ** (1./decay_interval)
+epochs_per_decay = 0.5
+net_decay_steps = train_iters / (epochs_per_decay * steps_per_epoch) # of decay steps in training run
+decay_factor = (min_learning_rate / init_learning_rate) ** (1./net_decay_steps)
+steps_per_decay = steps_per_epoch * epochs_per_decay
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
@@ -239,7 +238,6 @@ def main(_):
     signal.signal(signal.SIGINT, sigint_handler)
 
     with tf.Graph().as_default():
-        global_step = slim.get_or_create_global_step()
 
         ####################
         # Select the model #
@@ -279,19 +277,17 @@ def main(_):
 
         variables_to_restore = slim.get_variables_to_restore()
         
-        gpu_options = tf.GPUOptions(allow_growth=True, per_process_gpu_memory_fraction=1.0)
-        config = tf.ConfigProto(log_device_placement=False, gpu_options=gpu_options)
+        #gpu_options = tf.GPUOptions(allow_growth=True, per_process_gpu_memory_fraction=1.0)
+        #config = tf.ConfigProto(log_device_placement=False, gpu_options=gpu_options)
 
-        with tf.Session(config=config) as sess:
+        with tf.Session() as sess:
 
             ### DEFINE MODEL ###
-
-            bottleneck_names = [
+            bottleneck_names = [ # source bottleneck
                     'MobileNet/conv_ds_6/pw_batch_norm/Relu:0',
                     'MobileNet/conv_ds_12/pw_batch_norm/Relu:0',
                     'MobileNet/conv_ds_14/pw_batch_norm/Relu:0'
                     ]
-
             bottleneck_tensors = [sess.graph.get_tensor_by_name(b) for b in bottleneck_names]
 
             input_tensors = [tf.placeholder_with_default(b, shape=[None] + b.get_shape().as_list()[1:], name=('input_%d_t' % i)) for (i, b) in enumerate(bottleneck_tensors)]
@@ -309,15 +305,18 @@ def main(_):
                 tf.summary.scalar('loss', loss)
                 tf.summary.scalar('accuracy', ops['acc'])
             
-            learning_rate = tf.train.exponential_decay(learning_rate, global_step, decay_interval, decay_factor)
-            tf.summary.scalar('learning_rate', learning_rate) # hopefully it works easily
+            global_step = slim.get_or_create_global_step()
+
+            learning_rate = tf.train.exponential_decay(init_learning_rate, global_step, steps_per_decay, decay_factor)
+            tf.summary.scalar('learning_rate', learning_rate)
 
             update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+
+            opt = tf.train.AdamOptimizer(learning_rate = learning_rate)#.minimize(train['loss'])
+            train_vars = slim.get_trainable_variables(scope='SSD')
+
             with tf.control_dependencies(update_ops):
-                opt = tf.train.AdamOptimizer(learning_rate = learning_rate)#.minimize(train['loss'])
-                train_vars = slim.get_trainable_variables(scope='SSD')
-                opt = slim.learning.create_train_op(loss, opt, variables_to_train=train_vars)
-            ####################
+                train_op = opt.minimize(loss, global_step=global_step, var_list=train_vars)
 
             sess.run(tf.global_variables_initializer())
 
@@ -372,7 +371,7 @@ def main(_):
                 feed_dict[is_training] = True
                 ######################
 
-                s,_ = sess.run([merged, opt], feed_dict)
+                s,_ = sess.run([merged, train_op], feed_dict)
                 train_writer.add_summary(s, i)
 
                 if i % 50 == 0: # -- evaluate
