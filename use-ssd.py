@@ -10,7 +10,9 @@ import numpy as np
 import cv2
 
 from timer import Timer
+
 from coco_utils import COCOLoader
+from voc_utils import VOCLoader
 
 def str2bool(v):
     if v.lower() in ('yes', 'true', 't', 'y', '1'):
@@ -126,7 +128,7 @@ def putText(frame, loc, txt):
     font = cv2.FONT_HERSHEY_SIMPLEX
     ts = cv2.getTextSize(txt, font, 0.5, 0)[0]
     pt = (int(loc[0] - ts[0]/2.0), int(loc[1] - ts[1]/2.0))
-    cv2.putText(frame, txt, pt, font, 0.5, (255,0,0))
+    cv2.putText(frame, txt, pt, font, 0.5, (0,0,255))
 
 def main(argv):
   """Runs inference on an image."""
@@ -163,6 +165,8 @@ def main(argv):
 
       # grab tensors
       box_t, cls_t, val_t = [sess.graph.get_tensor_by_name(o) for o in output_names]
+      idx_t = tf.reshape(tf.where(val_t > 0.5), [-1])
+      box_t, cls_t, val_t = [tf.gather(t, idx_t) for t in [box_t, cls_t, val_t]]
       input_tensor = sess.graph.get_tensor_by_name('input:0')
       is_training = sess.graph.get_tensor_by_name('is_training:0')
 
@@ -171,6 +175,7 @@ def main(argv):
       box_t, cls_t, val_t = [tf.gather(t, idx_t) for t in [box_t, cls_t, val_t]]
 
       cv2.namedWindow('frame')
+      cv2.namedWindow('truth')
       cv2.moveWindow('frame', 50, 50)
       #cap = cv2.VideoCapture(0)
 
@@ -192,7 +197,7 @@ def main(argv):
               #with open('timeline.json', 'w') as f:
               #    f.write(ctf)
 
-          good_idx = (val > 0.75)
+          good_idx = (val > 0.8)
           num = max(1, min(10, np.count_nonzero(good_idx)))
           #best_idx = np.argsort(val)[-num:]
           #print num
@@ -214,22 +219,25 @@ def main(argv):
               cv2.rectangle(frame, (x-w//2,y-h//2), (x+w//2,y+h//2), (255,0,0), 2)
           cv2.imshow('frame', frame)
 
-      coco_root = os.getenv('COCO_ROOT')
-      coco_type = 'train2014' #TODO : change to val2014 ...
-      coco = COCOLoader(coco_root, coco_type)
-      print coco.list_image_sets()
-      l = list(coco.list_all())
+      #coco_root = os.getenv('COCO_ROOT')
+      #coco_type = 'val2014'
+      #loader = COCOLoader(coco_root, coco_type)
+      voc_root = os.getenv('VOC_ROOT')
+      loader = VOCLoader(voc_root)
+      print loader.list_image_sets()
+      l = list(loader.list_all())
       np.random.shuffle(l)
 
       for img_id in l:
           print img_id, type(img_id)
-          frame, boxs, lbls = coco.grab_pair(img_id)
+          img_path, boxs, lbls = loader.grab(img_id)
+          frame = cv2.imread(img_path)
           print lbls
           h,w = frame.shape[:2]
+          run(frame.copy())
           for box in boxs:
               y1,x1,y2,x2 = [int(b*s) for (b,s) in zip(box, [h,w,h,w])]
               cv2.rectangle(frame, (x1,y1), (x2,y2), (0,0,255), 1)
-          run(frame.copy())
           cv2.imshow('truth', frame)
           if (cv2.waitKey(0) == 27) or (not FLAGS.loop):
               break

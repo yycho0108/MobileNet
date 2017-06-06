@@ -32,14 +32,14 @@ slim = tf.contrib.slim
 #################
 input_ckpt_path = './data/model.ckpt-906808'
 #input_ckpt_path = 'data/train/model.ckpt'
-#bottleneck_name = 'MobileNet/conv_ds_14/pw_batch_norm/Relu:0'
 
+#bottleneck_name = 'MobileNet/conv_ds_14/pw_batch_norm/Relu:0'
 output_graph_path = 'data/train/output_graph.pb'
 output_labels_path = 'data/train/labels.txt'
 output_ckpt_path = 'data/train/model.ckpt'
 
-#loader = VOCLoader(os.getenv('VOC_ROOT'))
-train_loader = COCOLoader(os.getenv('COCO_ROOT'),'train2014')
+voc_loader = VOCLoader(os.getenv('VOC_ROOT')) #17125
+train_loader = COCOLoader(os.getenv('COCO_ROOT'),'train2014') #66843
 valid_loader = COCOLoader(os.getenv('COCO_ROOT'),'val2014')
 
 log_root = '/tmp/mobilenet_logs/'
@@ -58,12 +58,11 @@ MODEL_INPUT_WIDTH = 224
 MODEL_INPUT_HEIGHT = 224
 MODEL_INPUT_DEPTH = 3
 
-train_iters = int(10e3)
-split_ratio = 0.85
-learning_rate = 5e-4
+train_iters = int(4e3)
+#split_ratio = 0.85
+learning_rate = 1e-3
 
 tf.logging.set_verbosity(tf.logging.INFO)
-
 
 ##############
 # SSD PARAMS #
@@ -72,105 +71,9 @@ tf.logging.set_verbosity(tf.logging.INFO)
 box_ratios = [1.0, 1.0, 2.0, 3.0, 1.0/2, 1.0/3]
 num_boxes = len(box_ratios)
 
+num_outputs = num_boxes * (num_classes + 4)
+
 ##################
-
-def add_input_distortions(image, bbox, label, flip_left_right=True, random_crop=0.1, random_scale=0.3, random_brightness=0.5):
-    # image = (1, 224, 224, 3)
-    # l_bbox= (num_bbox, 4), in normalized coordinates (0.0 ~ 1.0)
-    # bbox format = (y1,x1,y2,x2)
-
-    ### SCALE ###
-    margin_scale = 1.0 + random_crop
-    resize_scale = 1.0 + random_scale
-    margin_scale_value = tf.constant(margin_scale)
-    resize_scale_value = tf.random_uniform((1,),
-                                           minval=1.0,
-                                           maxval=resize_scale)
-    scale_value = tf.multiply(margin_scale_value, resize_scale_value)
-    scale_width = tf.multiply(scale_value, MODEL_INPUT_WIDTH)
-    scale_height = tf.multiply(scale_value, MODEL_INPUT_HEIGHT)
-    scale_shape = tf.cast(tf.concat([scale_height, scale_width],0), dtype=tf.int32)
-    #===========
-    scaled_image = tf.image.resize_bilinear(image, scale_shape)
-    # bbox is invariant to scale
-    #############
-    scaled_image_3d = tf.squeeze(scaled_image, [0])
-
-    ### CROP ###
-    w_offset_max = scale_width - MODEL_INPUT_WIDTH
-    h_offset_max = scale_height - MODEL_INPUT_HEIGHT
-    w_offset = tf.random_uniform((), minval=0, maxval = w_offset_max) # TODO : int32?
-    h_offset = tf.random_uniform((), minval=0, maxval = h_offset_max) 
-
-    w_offset_norm = w_offset / scale_width
-    h_offset_norm = h_offset / scale_height
-    w_norm = MODEL_INPUT_WIDTH / scale_width
-    h_norm = MODEL_INPUT_HEIGHT / scale_height
-
-    split_bbox = tf.unstack(bbox, axis=1)
-    split_bbox[0] = tf.clip_by_value((split_bbox[0] - h_offset_norm)/h_norm, 0, 1)# y1
-    split_bbox[1] = tf.clip_by_value((split_bbox[1] - w_offset_norm)/w_norm, 0, 1)# x1
-    split_bbox[2] = tf.clip_by_value((split_bbox[2] - h_offset_norm)/h_norm, 0, 1)# y2
-    split_bbox[3] = tf.clip_by_value((split_bbox[3] - w_offset_norm)/w_norm, 0, 1)# x2
-
-    h_mask = tf.greater(split_bbox[2] - split_bbox[0], 1/16.) 
-    w_mask = tf.greater(split_bbox[3] - split_bbox[1], 1/16.)
-    mask = tf.logical_and(w_mask, h_mask)
-    sel_idx = tf.where(mask)
-
-    split_bbox[0] = tf.gather(split_bbox[0], sel_idx)
-    split_bbox[1] = tf.gather(split_bbox[1], sel_idx)
-    split_bbox[2] = tf.gather(split_bbox[2], sel_idx)
-    split_bbox[3] = tf.gather(split_bbox[3], sel_idx)
-    label = tf.gather(label, sel_idx)
-
-    offset = tf.cast(tf.concat([h_offset, w_offset, tf.constant([0.0])],0), tf.int32)
-    size = [MODEL_INPUT_HEIGHT, MODEL_INPUT_WIDTH, MODEL_INPUT_DEPTH]
-    #===========
-    cropped_image = tf.slice(scaled_image_3d, offset, size)
-    cropped_bbox  = tf.concat(split_bbox, axis=1)
-    ############
-
-    ### FLIP ###
-    if flip_left_right:
-
-        def flip():
-            pre_flip = tf.unstack(tf.add(tf.multiply(cropped_bbox, [1,-1,1,-1]), [0,1,0,1]),axis=1)
-            return tf.stack([pre_flip[0],pre_flip[3],pre_flip[2],pre_flip[1]], axis=1)
-            
-        p = (tf.random_uniform(())>0.5)
-        flipped_image = tf.cond(p, lambda : tf.image.flip_left_right(cropped_image), lambda : cropped_image)
-        flipped_bbox  = tf.cond(p, flip, lambda : cropped_bbox)
-    else:
-        flipped_image = cropped_image
-        flipped_bbox  = cropped_bbox
-    ############
-
-    ### BRIGHTEN ###
-    brightness_min = 1.0 - random_brightness
-    brightness_max = 1.0 + random_brightness
-    brightness_value = tf.random_uniform((),
-                                         minval=brightness_min,
-                                         maxval=brightness_max)
-    #==============
-    brightened_image = tf.clip_by_value(tf.multiply(flipped_image, brightness_value), 0.0, 1.0)
-    ################
-
-    return brightened_image, flipped_bbox, label
-
-class Distorter(object):
-    def __init__(self, image):
-        self.image = image
-        self.bbox = tf.placeholder(tf.float32, [None, 4])
-        self.label = tf.placeholder(tf.float32,  [None])
-        self.d_image, self.d_bbox, self.d_label = add_input_distortions(tf.expand_dims(self.image,0), self.bbox, self.label)
-        self.d_label = tf.squeeze(self.d_label, [-1])
-    def apply(self, sess, im_in, bbox_in, label_in):
-        while True:
-            d_im, d_bb, d_lbl = sess.run([self.d_image, self.d_bbox, self.d_label], feed_dict={self.image : im_in, self.bbox : bbox_in, self.label : label_in})
-            if len(d_lbl) > 0:
-                break
-        return d_im, d_bb, d_lbl
 
 def dwc(inputs, num_out, scope, stride=1, output_activation_fn=tf.nn.elu):
     dc = slim.separable_conv2d(inputs,
@@ -190,7 +93,7 @@ def extended_ops(input_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor,
     with tf.variable_scope('extended_ops') as sc:
         with slim.arg_scope([slim.conv2d, slim.separable_convolution2d],
                 activation_fn=tf.nn.elu,
-                weights_regularizer=slim.l2_regularizer(0.005),
+                weights_regularizer=slim.l2_regularizer(4e-5),
                 normalizer_fn = slim.batch_norm,
                 normalizer_params={
                     'is_training' : is_training,
@@ -203,9 +106,10 @@ def extended_ops(input_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor,
             input_tensors = list(input_tensors) # copy list
 
             # extra features
+            depths = [512, 384, 256]
             for i in range(3):
                 with tf.variable_scope('feat_%d' % i):
-                    logits = dwc(input_tensors[-1], 256, scope='f_dwc_%d' % i, stride=2)
+                    logits = dwc(input_tensors[-1], depths[i], scope='f_dwc', stride=2)
                     input_tensors.append(logits)
 
             # bbox predictions
@@ -213,9 +117,8 @@ def extended_ops(input_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor,
             for i, t in enumerate(input_tensors):
                 h,w = t.get_shape().as_list()[1:3]
                 with tf.variable_scope('box_%d' % i):
-                    logits = dwc(t, 256, scope='b_dwc_1')
-                    logits = dwc(logits, 128, scope='b_dwc_2') # deeper?
-                    logits = dwc(logits, num_boxes * (num_classes+4), scope='b_dwc_3', output_activation_fn=None)
+                    #logits = slim.conv2d(t, num_outputs=num_outputs, kernel_size=[3,3], activation_fn=None, scope='b_conv')
+                    logits = dwc(t, num_outputs, scope='b_dwc', output_activation_fn=None)
                     logits = tf.reshape(logits, (-1, h, w, num_boxes, 4+num_classes)) 
                     output_tensors.append(logits)
 
@@ -224,12 +127,13 @@ def extended_ops(input_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor,
 
             n = len(output_tensors)
 
-            s_min = 0.15
+            s_min = 0.1
             s_max = 0.9
             scales = []
 
             def s(i):
                 return s_min + (s_max - s_min) / (n-1) * (i)
+
             with tf.name_scope('train'):
                 for i, logits in enumerate(output_tensors):
                     s_k = s(i)
@@ -387,12 +291,12 @@ def main(_):
 
             is_training = tf.placeholder(tf.bool, [], name='is_training')
 
-            train = extended_ops(input_tensors, gt_boxes, gt_splits, gt_labels, num_classes, is_training=is_training, reuse=None)
+            ops = extended_ops(input_tensors, gt_boxes, gt_splits, gt_labels, num_classes, is_training=is_training, reuse=None)
 
             loss = tf.losses.get_total_loss()
             with tf.name_scope('evaluation'):
                 tf.summary.scalar('loss', loss)
-                tf.summary.scalar('accuracy', train['acc'])
+                tf.summary.scalar('accuracy', ops['acc'])
             
             update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
             with tf.control_dependencies(update_ops):
@@ -404,10 +308,10 @@ def main(_):
             sess.run(tf.global_variables_initializer())
 
             saver = tf.train.Saver(variables_to_restore)
-            saver.restore(sess, input_ckpt_path)
+            saver.restore(sess, input_ckpt_path) # -- only restores mobilenet weights
 
             total_saver = tf.train.Saver() # -- save all
-            #total_saver.restore(sess, output_ckpt_path)
+            #total_saver.restore(sess, output_ckpt_path) # restore all
 
             run_id = 'run_%02d' % len(os.walk(log_root).next()[1])
             run_log_root = os.path.join(log_root, run_id)
@@ -417,11 +321,14 @@ def main(_):
 
             merged = tf.summary.merge_all()
 
+            anns_voc = voc_loader.list_all() # use for training
             anns_train = train_loader.list_all()
+            select_ratio = np.array([float(len(anns_voc)), float(len(anns_train))])
+            select_ratio /= sum(select_ratio)
             anns_valid = valid_loader.list_all()
 
-            np.random.shuffle(anns_train)
-            np.random.shuffle(anns_valid)
+            #np.random.shuffle(anns_train)
+            #np.random.shuffle(anns_valid)
 
             # if given only one dataset:
             #n = len(anns)
@@ -435,8 +342,10 @@ def main(_):
             for i in range(train_iters):
                 if stop_request:
                     break
-
-                btls, boxs, spls, lbls = get_or_create_bottlenecks(sess, bottleneck_tensors, image, train_loader, anns_train, batch_size)
+                if np.random.choice(2, p=select_ratio):#0 = voc, 1 = coco-train
+                    btls, boxs, spls, lbls = get_or_create_bottlenecks(sess, bottleneck_tensors, image, voc_loader, anns_voc, batch_size)
+                else:
+                    btls, boxs, spls, lbls = get_or_create_bottlenecks(sess, bottleneck_tensors, image, train_loader, anns_train, batch_size)
                 # apply distortions to image with 1/2 probability
 
                 ## CREATE FEED DICT ##
@@ -452,7 +361,7 @@ def main(_):
                 s,_ = sess.run([merged, opt], feed_dict)
                 train_writer.add_summary(s, i)
 
-                if i % 20 == 0: # -- evaluate
+                if i % 50 == 0: # -- evaluate
                     btls, boxs, spls, lbls = get_or_create_bottlenecks(sess, bottleneck_tensors, image, valid_loader, anns_valid, batch_size)
                     feed_dict = {
                             btl : btl_in for (btl,btl_in) in zip(input_tensors, btls)
@@ -461,11 +370,12 @@ def main(_):
                     feed_dict[gt_splits] = spls 
                     feed_dict[gt_labels] = lbls 
                     feed_dict[is_training] = False
-                    l, a, s = sess.run([loss, train['acc'], merged], feed_dict = feed_dict)
-                    #b, c, sc = sess.run([train['box'], train['cls'], train['val']], feed_dict=feed_dict)
-
+                    l, a, s = sess.run([loss, ops['acc'], merged], feed_dict = feed_dict)
+                    #b, c, sc = sess.run([ops['box'], ops['cls'], ops['val']], feed_dict=feed_dict)
                     valid_writer.add_summary(s, i)
                     print('%d ) Loss : %.3f, Accuracy : %.2f' % (i, l, a))
+
+                if i>0 and i % 100 == 0: # -- save checkpoint
                     total_saver.save(sess, output_ckpt_path)
 
                 ### VISUALIZE DISTORTIONS ###
@@ -483,12 +393,14 @@ def main(_):
                 ### RUN PREDICTION ###
                 #c_pred = sess.run(predictions, feed_dict={image : c_image})
                 ######################
-            output_graph_def = graph_util.convert_variables_to_constants(
-                    sess, sess.graph.as_graph_def(), [train[s].name[:-2] for s in ['box', 'cls', 'val']]) # strip :0
-            with gfile.FastGFile(output_graph_path, 'wb') as f:
-              f.write(output_graph_def.SerializeToString())
-            with gfile.FastGFile(output_labels_path, 'w') as f:
-              f.write('\n'.join(categories) + '\n')
+
+            if i > 100: # didn't terminate prematurely
+                output_graph_def = graph_util.convert_variables_to_constants(
+                        sess, sess.graph.as_graph_def(), [ops[s].name[:-2] for s in ['box', 'cls', 'val']]) # strip :0
+                with gfile.FastGFile(output_graph_path, 'wb') as f:
+                  f.write(output_graph_def.SerializeToString())
+                with gfile.FastGFile(output_labels_path, 'w') as f:
+                  f.write('\n'.join(categories) + '\n')
 
 if __name__ == '__main__':
   tf.app.run()

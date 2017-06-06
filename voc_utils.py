@@ -77,7 +77,7 @@ class VOCLoader(object):
             xml = f.readlines()
         xml = ''.join([line.strip('\t') for line in xml])
         ann = BeautifulSoup(xml)
-        box, lbl = ann2bbox(ann, categories)
+        box, lbl = ann2bbox(ann, self.list_image_sets())
         return img_name, box, lbl
 
     def load_annotation(self, img_filename):

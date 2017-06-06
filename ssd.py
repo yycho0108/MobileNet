@@ -273,8 +273,10 @@ def pred(output_tensors, df_boxes, num_classes): # --> NOT per tensor
     s_cls = tf.concat(s_cls, axis=0, name='cls_concat')
     s_val = tf.concat(s_val, axis=0, name='val_concat')
 
-    idx_t = tf.reshape(tf.where(tf.greater(s_val, tf.constant(0.1))), [-1]) # only collect useful boxes
-    s_box, s_cls, s_val = [tf.gather(t, idx_t) for t in [s_box, s_cls, s_val]]
+    # disabled - offloading this thresholding procedure to the user end
+    # it is nonetheless a very critical step towards improving FPS
+    #idx_t = tf.reshape(tf.where(tf.greater(s_val, tf.constant(0.1))), [-1])
+    #s_box, s_cls, s_val = [tf.gather(t, idx_t) for t in [s_box, s_cls, s_val]]
 
     return s_box, s_cls, s_val
 
@@ -338,10 +340,10 @@ def train(output, iou, sel, cls, loc, num_classes, pos_neg_ratio=3.0, alpha = 1.
         pos_loss = tf.where(n_pos>0, tf.reduce_sum(pos_loss)/(n_pos + batch_size), 0)
         tf.summary.scalar('pos', pos_loss)
         tf.losses.add_loss(pos_loss)
-        neg_loss = 2 * tf.where(k>0, tf.reduce_sum(neg_loss)/tf.cast(k + batch_size,tf.float32), 0)
+        neg_loss = tf.where(k>0, tf.reduce_sum(neg_loss)/tf.cast(k + batch_size,tf.float32), 0)
         tf.summary.scalar('neg', neg_loss)
         tf.losses.add_loss(neg_loss)
-        loc_loss = 10 * tf.where(n_pos>0, tf.reduce_sum(loc_loss)/(n_pos + batch_size), 0)
+        loc_loss = tf.where(n_pos>0, tf.reduce_sum(loc_loss)/(n_pos + batch_size), 0)
         tf.summary.scalar('loc', loc_loss)
         tf.losses.add_loss(loc_loss)
 
