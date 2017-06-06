@@ -21,9 +21,15 @@ class COCOLoader(object):
         self.catVOC = self.coco.getCatIds(catNms=self.voc_cats)
     def list_image_sets(self):
         return self.voc_cats
-    def list_all(self):
+    def list_all(self, target=None):
+
+        if target is not None and target in self.voc_cats:
+            cats = self.coco.getCatIds(catNms=[target])
+        else:
+            cats = self.catVOC
+
         ids = None
-        for i, catId in enumerate(self.catVOC):
+        for i, catId in enumerate(cats):
             if i==0:
                 ids = set(self.coco.catToImgs[catId])
             else:

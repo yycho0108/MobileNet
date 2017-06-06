@@ -26,8 +26,6 @@ import ssd
 
 from utilities import *
 
-import threading
-
 slim = tf.contrib.slim
 
 #################
@@ -54,7 +52,7 @@ if not os.path.exists(bottleneck_root):
 categories = train_loader.list_image_sets() # same
 num_classes = len(categories)
 train_batch_size = 128
-valid_batch_size = 1
+valid_batch_size = 1 # must remain at 1.
 MODEL_INPUT_WIDTH = 224
 MODEL_INPUT_HEIGHT = 224
 MODEL_INPUT_DEPTH = 3
@@ -72,9 +70,10 @@ net_decay_steps = train_iters / (epochs_per_decay * steps_per_epoch) # of decay 
 decay_factor = (min_learning_rate / init_learning_rate) ** (1./net_decay_steps)
 steps_per_decay = steps_per_epoch * epochs_per_decay
 
-tf.logging.set_verbosity(tf.logging.INFO)
+steps_per_valid = 10
+steps_per_save = 100
 
-num_threads = 4
+tf.logging.set_verbosity(tf.logging.INFO)
 
 ##############
 # SSD PARAMS #
@@ -87,10 +86,11 @@ num_outputs = num_boxes * (num_classes + 4)
 
 ##################
 
-def dwc(inputs, num_out, scope, stride=1, output_activation_fn=tf.nn.elu):
+def dwc(inputs, num_out, scope, stride=1, padding='SAME', output_activation_fn=tf.nn.elu):
     dc = slim.separable_conv2d(inputs,
             num_outputs=None,
             stride=stride,
+            padding=padding,
             depth_multiplier=1,
             kernel_size=[3, 3],
             scope=scope+'/dc')
@@ -122,7 +122,7 @@ def ssd_ops(feature_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor, nu
             depths = [512, 384, 256]
             for i in range(3):
                 with tf.variable_scope('feat_%d' % i):
-                    logits = dwc(feature_tensors[-1], depths[i], scope='f_dwc', stride=2)
+                    logits = dwc(feature_tensors[-1], depths[i], scope='f_dwc', padding='VALID')
                     feature_tensors.append(logits)
 
             # bbox predictions
@@ -302,65 +302,41 @@ def main(_):
                     ]
             bottleneck_tensors = [sess.graph.get_tensor_by_name(b) for b in bottleneck_names]
 
-            def create_input_tensors(is_training=True):
-                if is_training:
-                    input_size = train_batch_size
-                    feature_tensors = [tf.placeholder(tf.float32, shape=([train_batch_size]+b.get_shape().as_list()[1:])) for b in bottleneck_tensors]
-                else:
-                    input_size = valid_batch_size
-                    feature_tensors = [tf.placeholder_with_default(b, shape=([valid_batch_size]+b.get_shape().as_list()[1:])) for b in bottleneck_tensors]
+            def create_input_tensors(input_size=None):
+                feature_tensors = [tf.placeholder_with_default(b, shape=([None]+b.get_shape().as_list()[1:])) for b in bottleneck_tensors]
                 gt_boxes = tf.placeholder(tf.float32, [None, 4]) # ground truth boxes -- aggregated
                 gt_splits = tf.placeholder(tf.int32, [input_size]) # # ground truth boxes per sample
                 gt_labels = tf.placeholder(tf.int32, [None]) # ground truth labels -- aggregated
                 return feature_tensors + [gt_boxes, gt_splits, gt_labels]
 
-            ### CREATE QUEUE ###
-
             # Train Inputs
-
-            t_input_tensors = create_input_tensors(is_training=True)
-            t_input_dtypes = [t.dtype for t in t_input_tensors]
-            t_input_shapes = [t.shape for t in t_input_tensors] # remove batch dim.
-
+            t_input_tensors = create_input_tensors(input_size=train_batch_size)
             t_select_ratio = np.array([float(len(anns_voc)), float(len(anns_train)), 0.0])
             t_select_ratio /= sum(t_select_ratio)
-            t_q = tf.PaddingFIFOQueue(capacity=8, dtypes=t_input_dtypes, shapes=t_input_shapes)
-            t_enqueue_op = t_q.enqueue(t_input_tensors)
-            t_ft_1, t_ft_2, t_ft_3, t_gb, t_gs, t_gl = t_q.dequeue()
+            t_ft_1, t_ft_2, t_ft_3, t_gb, t_gs, t_gl = t_input_tensors
 
             # Validation Inputs
-
-            v_input_tensors = create_input_tensors(is_training=False)
-            v_input_dtypes = [t.dtype for t in v_input_tensors]
-            v_input_shapes = [t.shape for t in v_input_tensors]
-
+            v_input_tensors = create_input_tensors(input_size=valid_batch_size)
             v_select_ratio = [0.0,0.0,1.0] # only select validation
-            v_q = tf.PaddingFIFOQueue(capacity=8, dtypes=v_input_dtypes, shapes=v_input_shapes)
-            v_enqueue_op = v_q.enqueue(v_input_tensors)
-            v_ft_1, v_ft_2, v_ft_3, v_gb, v_gs, v_gl = v_q.dequeue()
+            v_ft_1, v_ft_2, v_ft_3, v_gb, v_gs, v_gl = v_input_tensors
 
-            def enqueue(coord, is_training=True):
+            def feed_dict(is_training=True):
                 select_ratio = t_select_ratio if is_training else v_select_ratio
                 batch_size = train_batch_size if is_training else valid_batch_size
                 input_tensors = t_input_tensors if is_training else v_input_tensors
-                enqueue_op = t_enqueue_op if is_training else v_enqueue_op
-                while not coord.should_stop():
-                    loader,anns = data_provider[np.random.choice(3, p=select_ratio)]
-                    input_values  = get_or_create_bottlenecks(sess, bottleneck_tensors, image, loader, anns, batch_size)
-                    feed_dict = {t:v for (t,v) in zip(input_tensors, input_values)}
-                    sess.run(enqueue_op, feed_dict = feed_dict)
-
-            coord = tf.train.Coordinator()
+                loader,anns = data_provider[np.random.choice(3, p=select_ratio)]
+                input_values = get_or_create_bottlenecks(sess, bottleneck_tensors, image, loader, anns, batch_size)
+                return {t:v for (t,v) in zip(input_tensors, input_values)}
 
             ### DEFINE MODEL ###
             t_ops = ssd_ops([t_ft_1, t_ft_2, t_ft_3], t_gb, t_gs, t_gl, num_classes, reuse=None, is_training=True)
             v_ops = ssd_ops([v_ft_1, v_ft_2, v_ft_3], v_gb, v_gs, v_gl, num_classes, reuse=True, is_training=False)
             
-            loss = tf.losses.get_total_loss()
+            t_loss = tf.losses.get_total_loss()
             v_loss = tf.reduce_sum(tf.losses.get_losses(loss_collection='valid_loss'))
 
             with tf.name_scope('evaluation'):
-                tf.summary.scalar('loss', loss)
+                tf.summary.scalar('t_loss', t_loss)
                 tf.summary.scalar('train_accuracy', t_ops['acc'])
                 tf.summary.scalar('v_loss', v_loss, collections=['valid_summary'])
                 tf.summary.scalar('valid_accuracy', v_ops['acc'], collections=['valid_summary'])
@@ -371,11 +347,12 @@ def main(_):
 
             update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
 
-            opt = tf.train.AdamOptimizer(learning_rate = learning_rate)#.minimize(train['loss'])
+            opt = tf.train.AdamOptimizer(learning_rate = learning_rate)
+
             train_vars = slim.get_trainable_variables(scope='SSD')
 
             with tf.control_dependencies(update_ops):
-                train_op = opt.minimize(loss, global_step=global_step, var_list=train_vars)
+                train_op = opt.minimize(t_loss, global_step=global_step, var_list=train_vars)
 
             sess.run(tf.global_variables_initializer())
 
@@ -395,33 +372,23 @@ def main(_):
             valid_summary = tf.summary.merge_all('valid_summary')
 
             ### START TRAINING ###
-            t_feed_threads = [threading.Thread(target = enqueue, args=(coord, True)) for _ in range(1)]
-            v_feed_threads = [threading.Thread(target = enqueue, args=(coord, False)) for _ in range(1)]
-
-            for t in (v_feed_threads + t_feed_threads):
-                t.daemon = True
-                t.start()
 
             for i in range(train_iters):
                 if stop_request:
                     break
 
-                s,_ = sess.run([train_summary,train_op])
+                s,_ = sess.run([train_summary,train_op], feed_dict=feed_dict(is_training=True))
                 train_writer.add_summary(s, i)
 
-                if i % 50 == 0: # -- evaluate
-                    l, a, s = sess.run([v_loss, v_ops['acc'], valid_summary])
+                if (i % steps_per_valid) == 0: # -- evaluate
+                    l, a, s = sess.run([v_loss, v_ops['acc'], valid_summary], feed_dict=feed_dict(is_training=False))
                     valid_writer.add_summary(s, i)
                     print('%d ) Loss : %.3f, Accuracy : %.2f' % (i, l, a))
 
-                if i>0 and i % 100 == 0: # -- save checkpoint
+                if i>0 and (i % steps_per_save) == 0: # -- save checkpoint
                     total_saver.save(sess, output_ckpt_path, global_step=global_step)
 
-            coord.request_stop()
-            coord.join(t_feed_threads)
-            coord.join(v_feed_threads)
-
-            if i > 100: # didn't terminate prematurely
+            if (i > steps_per_save): # didn't terminate prematurely
                 output_graph_def = graph_util.convert_variables_to_constants(
                         sess, sess.graph.as_graph_def(), [v_ops[s].name[:-2] for s in ['box', 'cls', 'val']]) # strip :0
                 with gfile.FastGFile(output_graph_path, 'wb') as f:

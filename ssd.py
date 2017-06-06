@@ -286,6 +286,12 @@ def pred(output_tensors, df_boxes, num_classes): # --> NOT per tensor
     return s_box, s_cls, s_val
 
 def ops(output, iou, sel, cls, loc, num_classes, is_training=True, pos_neg_ratio=3.0, conf_thresh = 0.5): # --> per tensor
+
+    # Meta Info #
+    sum_col = [tf.GraphKeys.SUMMARIES if is_training else 'valid_summary']
+    loss_col = tf.GraphKeys.LOSSES if is_training else 'valid_loss'
+    #############
+
     # output should be something like
     # [b, m, 4 + num_classes]
     # each default box gets matched to best gt box?
@@ -320,14 +326,22 @@ def ops(output, iou, sel, cls, loc, num_classes, is_training=True, pos_neg_ratio
     n_pos = tf.reduce_sum(p_mask_f)
 
     ### NEGATIVE (No Object)
-    n_mask = (iou < conf_thresh) # regardless of selection, object not present
+    #n_mask = (iou < conf_thresh) # regardless of selection, object is not present
+    n_mask = tf.logical_not(sel)
     n_mask_f = tf.cast(n_mask, tf.float32)
     n_neg = tf.reduce_sum(n_mask_f)
 
     disparity = tf.abs(tf.subtract(iou, y_conf)) * n_mask_f # maximum disagreement!
 
-    k = tf.cast(tf.minimum(n_pos * pos_neg_ratio + tf.cast(batch_size, tf.float32), n_neg), tf.int32)
+    k = tf.cast(tf.minimum(n_pos * pos_neg_ratio, n_neg), tf.int32) # sometimes <=0 for whatever reason
+    k = tf.maximum(batch_size, k) # should be at least bigger than batch_size
 
+    #with tf.name_scope('counts'):
+    #    tf.summary.scalar('n_pos', n_pos, collections = sum_col)
+    #    tf.summary.scalar('n_neg', n_neg, collections = sum_col)
+    #    tf.summary.scalar('k', k, collections = sum_col)
+
+    # with tf.control_dependencies([tf.assert_greater(k,0)]):
     neg_val, neg_idx = tf.nn.top_k(tf.reshape(disparity, [-1]), k = k)
     sub_n_mask = tf.logical_and(n_mask, disparity >= neg_val[-1]) # final negative mask
     sub_n_mask_f = tf.cast(sub_n_mask, tf.float32)
@@ -343,9 +357,6 @@ def ops(output, iou, sel, cls, loc, num_classes, is_training=True, pos_neg_ratio
 
     loc_loss = smooth_l1(y_loc - loc) * p_mask_f
     #loc_loss = alpha * tf.nn.l2_loss(y_loc - t_loc) * p_mask_f
-
-    sum_col = [tf.GraphKeys.SUMMARIES if is_training else 'valid_summary']
-    loss_col = tf.GraphKeys.LOSSES if is_training else 'valid_loss'
 
     with tf.name_scope('losses'):
         # incorrect classification
@@ -365,11 +376,6 @@ def ops(output, iou, sel, cls, loc, num_classes, is_training=True, pos_neg_ratio
     acc_clf = tf.cast(tf.logical_and(tf.equal(tf.cast(y_pred, tf.int32), cls),p_mask), tf.float32)
     acc_pos = tf.cast(tf.logical_and(p_mask, y_conf > conf_thresh), tf.float32)
     acc_neg = tf.cast(tf.logical_and(n_mask, y_conf < conf_thresh), tf.float32)
-
-    #with tf.name_scope('counts'):
-    #    tf.summary.scalar('n_pos', n_pos)
-    #    tf.summary.scalar('n_neg', n_neg)
-    #    tf.summary.scalar('k', k)
 
     with tf.name_scope('acc'):
         tf.summary.scalar('acc_clf', tf.reduce_sum(acc_clf) / n_pos, collections = sum_col)

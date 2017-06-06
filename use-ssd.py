@@ -84,6 +84,9 @@ def run_graph(sess, image_data, labels, input_layer_name, output_names,
     idx_t = tf.reshape(tf.where(tf.greater(val_t, tf.constant(0.1))), [-1])
     box_t, cls_t, val_t = [tf.gather(t, idx_t) for t in [box_t, cls_t, val_t]]
 
+    idx_t = tf.reshape(tf.where(tf.equal(cls_t, 14)), [-1]) # filter - people
+    box_t, cls_t, val_t = [tf.gather(t, idx_t) for t in [box_t, cls_t, val_t]]
+
     #idx_t = tf.image.non_max_suppression(box_t, val_t, max_output_size=10, iou_threshold=0.25)
     #box_t, cls_t, val_t = tf.gather(box_t, idx_t), tf.gather(cls_t, idx_t), tf.gather(val_t, idx_t)
 
@@ -161,17 +164,22 @@ def main(argv):
       labels = load_labels(FLAGS.labels) + ['background']
       # load graph, which is stored in the default session
       load_graph(FLAGS.graph)
-      output_names = ['pred_box:0', 'pred_cls:0', 'pred_val:0']
+      output_names = ['pred_box_1:0', 'pred_cls_1:0', 'pred_val_1:0']
 
       # grab tensors
       box_t, cls_t, val_t = [sess.graph.get_tensor_by_name(o) for o in output_names]
-      idx_t = tf.reshape(tf.where(val_t > 0.02), [-1])
+
+      idx_t = tf.reshape(tf.where(tf.equal(cls_t, 14)), [-1]) # filter - people only
       box_t, cls_t, val_t = [tf.gather(t, idx_t) for t in [box_t, cls_t, val_t]]
+
+      idx_t = tf.reshape(tf.where(val_t > 0.01), [-1]) # filter - decent boxes only
+      box_t, cls_t, val_t = [tf.gather(t, idx_t) for t in [box_t, cls_t, val_t]]
+
+
       input_tensor = sess.graph.get_tensor_by_name('input:0')
-      is_training = sess.graph.get_tensor_by_name('is_training:0')
 
       # processing tensors
-      idx_t = tf.image.non_max_suppression(box_t, val_t, max_output_size=200, iou_threshold=0.35) # collect best boxes
+      idx_t = tf.image.non_max_suppression(box_t, val_t, max_output_size=200, iou_threshold=0.25) # collect best boxes
       box_t, cls_t, val_t = [tf.gather(t, idx_t) for t in [box_t, cls_t, val_t]]
 
       cv2.namedWindow('frame')
@@ -188,7 +196,7 @@ def main(argv):
           with Timer('Detection'):
               #run_metadata = tf.RunMetadata()
     
-              box, cls, val = sess.run([box_t, cls_t, val_t], {input_tensor: image_data, is_training : False})
+              box, cls, val = sess.run([box_t, cls_t, val_t], {input_tensor: image_data})
               #        options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE),
               #        run_metadata = run_metadata)
 
@@ -227,7 +235,7 @@ def main(argv):
       #loader = VOCLoader(voc_root)
 
       #print loader.list_image_sets()
-      l = list(loader.list_all())
+      l = list(loader.list_all(target='person'))
       np.random.shuffle(l)
 
       for img_id in l:
