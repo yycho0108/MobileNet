@@ -61,8 +61,8 @@ train_iters = int(4e3)
 #split_ratio = 0.85
 
 # Learning Rate Params
-init_learning_rate = 1e-4
-min_learning_rate = 1e-5
+init_learning_rate = 1e-3
+min_learning_rate = 1e-4
 num_samples = len(voc_loader.list_all()) + len(train_loader.list_all()) # = 83968
 steps_per_epoch = num_samples / batch_size # or thereabout.
 epochs_per_decay = 0.5

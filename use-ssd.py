@@ -165,13 +165,13 @@ def main(argv):
 
       # grab tensors
       box_t, cls_t, val_t = [sess.graph.get_tensor_by_name(o) for o in output_names]
-      idx_t = tf.reshape(tf.where(val_t > 0.05), [-1])
+      idx_t = tf.reshape(tf.where(val_t > 0.02), [-1])
       box_t, cls_t, val_t = [tf.gather(t, idx_t) for t in [box_t, cls_t, val_t]]
       input_tensor = sess.graph.get_tensor_by_name('input:0')
       is_training = sess.graph.get_tensor_by_name('is_training:0')
 
       # processing tensors
-      idx_t = tf.image.non_max_suppression(box_t, val_t, max_output_size=200, iou_threshold=0.25) # collect best boxes
+      idx_t = tf.image.non_max_suppression(box_t, val_t, max_output_size=200, iou_threshold=0.35) # collect best boxes
       box_t, cls_t, val_t = [tf.gather(t, idx_t) for t in [box_t, cls_t, val_t]]
 
       cv2.namedWindow('frame')
@@ -197,7 +197,7 @@ def main(argv):
               #with open('timeline.json', 'w') as f:
               #    f.write(ctf)
 
-          good_idx = (val > 0.75)
+          good_idx = (val > 0.5)
           num = max(1, min(10, np.count_nonzero(good_idx)))
           #best_idx = np.argsort(val)[-num:]
           #print num

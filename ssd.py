@@ -209,14 +209,14 @@ def create_label_tf(gt_boxes, gt_split_tensor, gt_label_tensor, d_box):
 
     dy1, dx1, dy2, dx2 = tf.unstack(delta, axis=-1)
 
-    dy = (dy1+dy2)/2 # todo : consider dividing dy by h, as from SSD-Tensorflow
-    dx = (dx1+dx2)/2
+    dy = (dy1+dy2)/2. # todo : consider dividing dy by h, as from SSD-Tensorflow
+    dx = (dx1+dx2)/2.
 
     cw = d_box[:,:,3] - d_box[:,:,1] # cell width (for default box)
     ch = d_box[:,:,2] - d_box[:,:,0] # cell height 
 
-    i_cw = tf.constant(1.0, dtype=tf.float32) / cw # inverse
-    i_ch = tf.constant(1.0, dtype=tf.float32) / ch
+    i_cw = tf.constant(1., dtype=tf.float32) / cw # inverse
+    i_ch = tf.constant(1., dtype=tf.float32) / ch
 
     dw = tf.log(tf.multiply(gt_boxes[:,:,3] - gt_boxes[:,:,1], i_cw))
     dh = tf.log(tf.multiply(gt_boxes[:,:,2] - gt_boxes[:,:,0], i_ch))
