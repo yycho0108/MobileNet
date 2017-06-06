@@ -52,7 +52,7 @@ if not os.path.exists(bottleneck_root):
 
 categories = train_loader.list_image_sets() # same
 num_classes = len(categories)
-batch_size = 64
+batch_size = 128
 valid_batch_size = 4
 MODEL_INPUT_WIDTH = 224
 MODEL_INPUT_HEIGHT = 224
@@ -60,7 +60,15 @@ MODEL_INPUT_DEPTH = 3
 
 train_iters = int(4e3)
 #split_ratio = 0.85
+
+# Learning Rate Params
 learning_rate = 1e-3
+min_learning_rate = 1e-4
+num_samples = len(voc_loader.list_all()) + len(train_loader.list_all()) # = 83968
+steps_per_epoch = num_samples / batch_size # or thereabout.
+num_epochs_per_decay = 0.5
+decay_interval = train_iters / (num_epochs_per_decay * steps_per_epoch)
+decay_factor = (min_learning_rate / learning_rate) ** (1./decay_interval)
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
@@ -89,8 +97,8 @@ def dwc(inputs, num_out, scope, stride=1, output_activation_fn=tf.nn.elu):
             scope=scope+'/pc')
     return pc
 
-def extended_ops(input_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor, num_classes, is_training=True, reuse=None):
-    with tf.variable_scope('extended_ops') as sc:
+def ssd_ops(input_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor, num_classes, is_training=True, reuse=None):
+    with tf.variable_scope('SSD') as sc:
         with slim.arg_scope([slim.conv2d, slim.separable_convolution2d],
                 activation_fn=tf.nn.elu,
                 weights_regularizer=slim.l2_regularizer(4e-5),
@@ -103,7 +111,7 @@ def extended_ops(input_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor,
                     }
                 ):
 
-            input_tensors = list(input_tensors) # copy list
+            input_tensors = list(input_tensors) # copy list in case used outside
 
             # extra features
             depths = [512, 384, 256]
@@ -231,7 +239,7 @@ def main(_):
     signal.signal(signal.SIGINT, sigint_handler)
 
     with tf.Graph().as_default():
-        slim.get_or_create_global_step()
+        global_step = slim.get_or_create_global_step()
 
         ####################
         # Select the model #
@@ -270,8 +278,11 @@ def main(_):
         ###############
 
         variables_to_restore = slim.get_variables_to_restore()
+        
+        gpu_options = tf.GPUOptions(allow_growth=True, per_process_gpu_memory_fraction=1.0)
+        config = tf.ConfigProto(log_device_placement=False, gpu_options=gpu_options)
 
-        with tf.Session() as sess:
+        with tf.Session(config=config) as sess:
 
             ### DEFINE MODEL ###
 
@@ -291,17 +302,20 @@ def main(_):
 
             is_training = tf.placeholder(tf.bool, [], name='is_training')
 
-            ops = extended_ops(input_tensors, gt_boxes, gt_splits, gt_labels, num_classes, is_training=is_training, reuse=None)
+            ops = ssd_ops(input_tensors, gt_boxes, gt_splits, gt_labels, num_classes, is_training=is_training, reuse=None)
 
             loss = tf.losses.get_total_loss()
             with tf.name_scope('evaluation'):
                 tf.summary.scalar('loss', loss)
                 tf.summary.scalar('accuracy', ops['acc'])
             
+            learning_rate = tf.train.exponential_decay(learning_rate, global_step, decay_interval, decay_factor)
+            tf.summary.scalar('learning_rate', learning_rate) # hopefully it works easily
+
             update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
             with tf.control_dependencies(update_ops):
                 opt = tf.train.AdamOptimizer(learning_rate = learning_rate)#.minimize(train['loss'])
-                train_vars = slim.get_trainable_variables(scope='extended_ops')
+                train_vars = slim.get_trainable_variables(scope='SSD')
                 opt = slim.learning.create_train_op(loss, opt, variables_to_train=train_vars)
             ####################
 
