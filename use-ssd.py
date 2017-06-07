@@ -24,13 +24,6 @@ def str2bool(v):
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
-    '--image', required=True, type=str, help='Absolute path to image file.')
-parser.add_argument(
-    '--num_top_predictions',
-    type=int,
-    default=10,
-    help='Display this many predictions.')
-parser.add_argument(
     '--graph',
     required=True,
     type=str,
@@ -42,16 +35,6 @@ parser.add_argument(
     default='data/labels.txt',
     type=str,
     help='Absolute path to labels file (.txt)')
-parser.add_argument(
-    '--input_layer',
-    type=str,
-    default='input:0',
-    help='Name of the input operation')
-parser.add_argument(
-    '--loop',
-    type=str2bool,
-    help='Loop through directory, instead of single file.')
-
 
 def load_image(filename):
     return cv2.imread(filename)[...,::-1]/255.0 
@@ -71,42 +54,6 @@ def load_graph(filename):
     tf.import_graph_def(graph_def, name='')
 
 from tensorflow.python.client import timeline
-
-def run_graph(sess, image_data, labels, input_layer_name, output_names,
-              num_top_predictions):
-
-    box_t, cls_t, val_t = [sess.graph.get_tensor_by_name(o) for o in output_names]
-    #print cls_t
-    #filter_t = tf.cast(tf.equal(cls_t, 14), tf.float32) # --> person
-
-    # filter out meaningless boxes
-
-    idx_t = tf.reshape(tf.where(tf.greater(val_t, tf.constant(0.1))), [-1])
-    box_t, cls_t, val_t = [tf.gather(t, idx_t) for t in [box_t, cls_t, val_t]]
-
-    idx_t = tf.reshape(tf.where(tf.equal(cls_t, 14)), [-1]) # filter - people
-    box_t, cls_t, val_t = [tf.gather(t, idx_t) for t in [box_t, cls_t, val_t]]
-
-    #idx_t = tf.image.non_max_suppression(box_t, val_t, max_output_size=10, iou_threshold=0.25)
-    #box_t, cls_t, val_t = tf.gather(box_t, idx_t), tf.gather(cls_t, idx_t), tf.gather(val_t, idx_t)
-
-    is_training = sess.graph.get_tensor_by_name('is_training:0')
-
-    run_metadata = tf.RunMetadata()
-    with Timer('Run-Only'):
-        box, cls, val = sess.run([box_t, cls_t, val_t], {input_layer_name: image_data, is_training : False},
-                options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE),
-                run_metadata = run_metadata)
-    
-    trace = timeline.Timeline(step_stats = run_metadata.step_stats)
-    ctf = trace.generate_chrome_trace_format()
-    with open('timeline.json', 'w') as f:
-        f.write(ctf)
-
-    #box, cls, val = sess.run([box_t, cls_t, val_t], {input_layer_name: image_data, is_training : False})
-    #print box[0], cls[0], val
-
-    return box, cls, val
 
 def resize(in_frame, h, w):
 
@@ -138,9 +85,6 @@ def main(argv):
   if argv[1:]:
     raise ValueError('Unused Command Line Args: %s' % argv[1:])
 
-  if not tf.gfile.Exists(FLAGS.image):
-    tf.logging.fatal('image file does not exist %s', FLAGS.image)
-
   if not tf.gfile.Exists(FLAGS.labels):
     tf.logging.fatal('labels file does not exist %s', FLAGS.labels)
 
@@ -154,7 +98,7 @@ def main(argv):
       colors.append([int(c) for c in color])
   colors.append(WHITE)
   
-  gpu_options = tf.GPUOptions(allow_growth=True, per_process_gpu_memory_fraction=0.5)
+  gpu_options = tf.GPUOptions(allow_growth=True, per_process_gpu_memory_fraction=0.3)
   config = tf.ConfigProto(log_device_placement=False, gpu_options=gpu_options)
 
   with tf.Session(config=config) as sess:
@@ -206,7 +150,9 @@ def main(argv):
               #    f.write(ctf)
 
           good_idx = (val > 0.75)
-          num = max(1, min(10, np.count_nonzero(good_idx)))
+          num = min(10, np.count_nonzero(good_idx))
+          print val[:num]
+
           #best_idx = np.argsort(val)[-num:]
           #print num
           #print len(best_idx)
@@ -249,23 +195,8 @@ def main(argv):
               y1,x1,y2,x2 = [int(b*s) for (b,s) in zip(box, [h,w,h,w])]
               cv2.rectangle(frame, (x1,y1), (x2,y2), (0,0,255), 1)
           cv2.imshow('truth', frame)
-          if (cv2.waitKey(0) == 27) or (not FLAGS.loop):
+          if (cv2.waitKey(0) == 27):
               break
-
-      if FLAGS.loop:
-          i = 0
-          for sub in os.listdir(FLAGS.image):
-              i += 1
-              #if i < 300:
-              #    continue;
-              image_path = os.path.join(FLAGS.image, sub)
-              if not run(image_path):
-                  break
-
-      else:
-          # load image
-          run(FLAGS.image)
-          
 
 
 if __name__ == '__main__':

@@ -3,7 +3,7 @@ slim = tf.contrib.slim
 import numpy as np
 from utilities import variable_summaries
 
-def default_box(output_tensor, box_ratios, scale=1.0, wildcard=1.0):
+def default_box(shape, box_ratios, scale=1.0, wildcard=1.0):
     # output_tensor = [b,h,w,c]
     # box_ratios = [n]
     # y1,x1,y2,x2
@@ -13,8 +13,7 @@ def default_box(output_tensor, box_ratios, scale=1.0, wildcard=1.0):
     box_ratios = np.array(box_ratios)
     box_ratios[0] *= wildcard
 
-    s = output_tensor.get_shape().as_list()
-    h,w = s[1], s[2]
+    h,w = shape
 
     #ch,cw = 1./h, 1./w # cell width
     ch,cw = scale, scale
@@ -242,8 +241,8 @@ def pred(output_tensors, df_boxes, num_classes): # --> NOT per tensor
     s_val = [] 
 
     for box, output in zip(df_boxes, output_tensors):
-
-        out_box,cls = tf.split(output, [4, -1], axis=4)
+        out_box, cls = output
+        #out_box,cls = tf.split(output, [4, -1], axis=4)
 
         cls = tf.nn.softmax(cls)
 
@@ -253,7 +252,7 @@ def pred(output_tensors, df_boxes, num_classes): # --> NOT per tensor
         pred_val = tf.reshape(tf.reduce_max(cls, axis=-1), [-1])
 
         box = tf.reshape(box, (-1, 4))
-        out_box = tf.reshape(out_box, (b, -1,4))
+        #out_box = tf.reshape(out_box, (b, -1,4))
 
         y1,x1,y2,x2 = tf.unstack(box, axis=1)
 
@@ -270,7 +269,7 @@ def pred(output_tensors, df_boxes, num_classes): # --> NOT per tensor
 
         out_box = tf.reshape(tf.stack([y1,x1,y2,x2], axis=-1), (-1,4))
 
-        s_box.append(out_box) # center-based, to simplify calculations
+        s_box.append(out_box)
         s_cls.append(pred_cls)
         s_val.append(pred_val)
 
@@ -306,12 +305,13 @@ def ops(output, iou, sel, cls, loc, num_classes, is_training=True, pos_neg_ratio
 
     batch_size = iou.shape.as_list()[0] # TODO: currently not dynamic
 
-    output = tf.reshape(output, [batch_size, -1, 4+num_classes]) #
+    #output = tf.reshape(output, [batch_size, -1, 4+num_classes]) #
     #print 'os', output.shape # [b, m, 24]
 
-    y_loc, y_cls = tf.split(output, [4, num_classes], axis=2) # TODO : -1 may not work?
+    #y_loc, y_cls = tf.split(output, [4, num_classes], axis=2) # TODO : -1 may not work?
+    y_loc, y_cls = output
 
-    y_loc = tf.nn.tanh(y_loc) # map to -1 ~ 1, which is appropriate for dx and dy ; probably dw and dh as well.
+    #y_loc = tf.nn.tanh(y_loc) # map to -1 ~ 1, which is appropriate for dx and dy ; probably dw and dh as well.
 
     # y_loc= [bs, m, 4]
     # y_cls = [bs, m, 20]

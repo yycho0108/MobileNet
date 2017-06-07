@@ -31,11 +31,18 @@ slim = tf.contrib.slim
 #################
 #   PARAMETERS  #
 #################
-input_ckpt_path = './data/model.ckpt-906808'
+input_ckpt_path = 'data/model.ckpt-906808'
 
-output_graph_path = 'data/train/output_graph.pb'
-output_labels_path = 'data/train/labels.txt'
-output_ckpt_path = 'data/train/model.ckpt'
+output_idx = '6'
+
+output_root = os.path.join('data','train',output_idx)
+
+if not os.path.exists(output_root):
+    os.makedirs(output_root)
+
+output_graph_path = os.path.join(output_root, 'output_graph.pb')
+output_labels_path = os.path.join(output_root, 'labels.txt')
+output_ckpt_path = os.path.join(output_root, 'model.ckpt')
 
 voc_loader = VOCLoader(os.getenv('VOC_ROOT')) #17125
 train_loader = COCOLoader(os.getenv('COCO_ROOT'),'train2014') #66843
@@ -51,7 +58,7 @@ if not os.path.exists(bottleneck_root):
 
 categories = train_loader.list_image_sets() # same
 num_classes = len(categories)
-train_batch_size = 128
+train_batch_size = 64
 valid_batch_size = 1 # must remain at 1.
 MODEL_INPUT_WIDTH = 224
 MODEL_INPUT_HEIGHT = 224
@@ -105,7 +112,7 @@ def ssd_ops(feature_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor, nu
     with tf.variable_scope('SSD', reuse=reuse) as sc:
         with slim.arg_scope([slim.conv2d, slim.separable_convolution2d],
                 activation_fn=tf.nn.elu,
-                weights_regularizer=slim.l2_regularizer(4e-5),
+                #weights_regularizer=slim.l2_regularizer(4e-5), -- removing regularizer as per Mobilenet Paper
                 normalizer_fn = slim.batch_norm,
                 normalizer_params={
                     'is_training' : is_training,
@@ -122,18 +129,36 @@ def ssd_ops(feature_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor, nu
             depths = [512, 384, 256]
             for i in range(3):
                 with tf.variable_scope('feat_%d' % i):
-                    logits = dwc(feature_tensors[-1], depths[i], scope='f_dwc', padding='VALID')
-                    feature_tensors.append(logits)
+                    feats = dwc(feature_tensors[-1], depths[i], scope='f_dwc', padding='VALID')
+                    feature_tensors.append(feats)
 
             # bbox predictions
             output_tensors = []
+            grid_dims = []
+
             for i, t in enumerate(feature_tensors):
                 h,w = t.get_shape().as_list()[1:3]
+                grid_dims.append((h,w))
                 with tf.variable_scope('box_%d' % i):
                     #logits = slim.conv2d(t, num_outputs=num_outputs, kernel_size=[3,3], activation_fn=None, scope='b_conv')
-                    logits = dwc(t, num_outputs, scope='b_dwc', output_activation_fn=None)
-                    logits = tf.reshape(logits, (-1, h, w, num_boxes, 4+num_classes)) 
-                    output_tensors.append(logits)
+                    #loc = t
+                    #loc = dwc(loc, 256, scope='b_dwc_loc_1')
+                    #loc = dwc(loc, num_boxes * 4, scope='b_dwc_loc_2')
+                    #loc = tf.reshape(loc, (-1, h*w*num_boxes, 4))
+
+                    #cls = t
+                    #cls = dwc(cls, 256, scope='b_dwc_cls_1') # separate weights
+                    #cls = dwc(cls, num_boxes * num_classes, scope='b_dwc_cls_2') # separate weights
+                    #cls = tf.reshape(cls, (-1, h*w*num_boxes, num_classes))
+                    #output_tensors.append((loc, cls))
+
+                    logits = t
+                    logits = dwc(logits, 384, scope='b_dwc_1')
+                    logits = dwc(logits, 128, scope='b_dwc_2')
+                    logits = dwc(logits, num_outputs, scope='b_dwc_3', output_activation_fn=None)
+                    logits = tf.reshape(logits, (-1, h*w*num_boxes, num_classes+4))
+                    loc,cls = tf.split(logits, [4, num_classes], axis=2)
+                    output_tensors.append((loc,cls))
 
             d_boxes = []
             net_acc = []
@@ -149,10 +174,11 @@ def ssd_ops(feature_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor, nu
 
             with tf.name_scope('train'):
                 for i, logits in enumerate(output_tensors):
+                    grid_dim = grid_dims[i]
                     s_k = s(i)
                     s_kn = s(i+1) 
                     w = np.sqrt(s_kn/s_k)
-                    d_box = np.reshape(ssd.default_box(logits, box_ratios, scale=s_k, wildcard=w), (-1,4))
+                    d_box = np.reshape(ssd.default_box(grid_dim, box_ratios, scale=s_k, wildcard=w), (-1,4))
                     d_box = tf.constant(d_box, tf.float32)
                     iou, sel, cls, delta = ssd.create_label_tf(gt_box_tensor, gt_split_tensor, gt_label_tensor, d_box)
                     acc = ssd.ops(logits, iou, sel, cls, delta, num_classes = num_classes, is_training = is_training)
@@ -282,10 +308,10 @@ def main(_):
 
         variables_to_restore = slim.get_variables_to_restore()
         
-        #gpu_options = tf.GPUOptions(allow_growth=True, per_process_gpu_memory_fraction=1.0)
-        #config = tf.ConfigProto(log_device_placement=False, gpu_options=gpu_options)
+        gpu_options = tf.GPUOptions(allow_growth=True, per_process_gpu_memory_fraction=0.3)
+        config = tf.ConfigProto(log_device_placement=False, gpu_options=gpu_options)
 
-        with tf.Session() as sess:
+        with tf.Session(config=config) as sess:
             #sess = tf_debug.LocalCLIDebugWrapperSession(sess)
 
             ### DATA PROVIDERS ###
