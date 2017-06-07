@@ -123,7 +123,7 @@ def main(argv):
       input_tensor = sess.graph.get_tensor_by_name('input:0')
 
       # processing tensors
-      idx_t = tf.image.non_max_suppression(box_t, val_t, max_output_size=200, iou_threshold=0.25) # collect best boxes
+      idx_t = tf.image.non_max_suppression(box_t, val_t, max_output_size=10, iou_threshold=0.25) # collect best boxes
       box_t, cls_t, val_t = [tf.gather(t, idx_t) for t in [box_t, cls_t, val_t]]
 
       cv2.namedWindow('frame')

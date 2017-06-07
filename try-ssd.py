@@ -142,14 +142,15 @@ def ssd_ops(feature_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor, nu
                 with tf.variable_scope('box_%d' % i):
 
                     ## Separate Localization/Classification Prediction
+                    ## From Feature Map
                     loc = t
-                    loc = dwc(loc, 256, scope='b_dwc_loc_2')
-                    loc = dwc(loc, num_boxes * 4, scope='b_dwc_loc_3')
+                    loc = dwc(loc, 256, scope='b_dwc_loc_1')
+                    loc = dwc(loc, num_boxes * 4, scope='b_dwc_loc_2')
                     loc = tf.reshape(loc, (-1, h*w*num_boxes, 4))
 
                     cls = t
-                    cls = dwc(cls, 256, scope='b_dwc_cls_2')
-                    cls = dwc(cls, num_boxes * num_classes, scope='b_dwc_cls_3')
+                    cls = dwc(cls, 256, scope='b_dwc_cls_1')
+                    cls = dwc(cls, num_boxes * num_classes, scope='b_dwc_cls_2')
                     cls = tf.reshape(cls, (-1, h*w*num_boxes, num_classes))
 
                     ## Coupled Localization/Classification Prediction
