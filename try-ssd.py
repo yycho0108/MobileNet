@@ -33,7 +33,7 @@ slim = tf.contrib.slim
 #################
 input_ckpt_path = 'data/model.ckpt-906808'
 
-output_idx = '6'
+output_idx = '10'
 
 output_root = os.path.join('data','train',output_idx)
 
@@ -64,7 +64,7 @@ MODEL_INPUT_WIDTH = 224
 MODEL_INPUT_HEIGHT = 224
 MODEL_INPUT_DEPTH = 3
 
-train_iters = int(4e3)
+train_iters = int(10e3)
 #split_ratio = 0.85
 
 # Learning Rate Params
@@ -140,24 +140,25 @@ def ssd_ops(feature_tensors, gt_box_tensor, gt_split_tensor, gt_label_tensor, nu
                 h,w = t.get_shape().as_list()[1:3]
                 grid_dims.append((h,w))
                 with tf.variable_scope('box_%d' % i):
-                    #logits = slim.conv2d(t, num_outputs=num_outputs, kernel_size=[3,3], activation_fn=None, scope='b_conv')
-                    #loc = t
-                    #loc = dwc(loc, 256, scope='b_dwc_loc_1')
-                    #loc = dwc(loc, num_boxes * 4, scope='b_dwc_loc_2')
-                    #loc = tf.reshape(loc, (-1, h*w*num_boxes, 4))
 
-                    #cls = t
-                    #cls = dwc(cls, 256, scope='b_dwc_cls_1') # separate weights
-                    #cls = dwc(cls, num_boxes * num_classes, scope='b_dwc_cls_2') # separate weights
-                    #cls = tf.reshape(cls, (-1, h*w*num_boxes, num_classes))
-                    #output_tensors.append((loc, cls))
+                    ## Separate Localization/Classification Prediction
+                    loc = t
+                    loc = dwc(loc, 256, scope='b_dwc_loc_2')
+                    loc = dwc(loc, num_boxes * 4, scope='b_dwc_loc_3')
+                    loc = tf.reshape(loc, (-1, h*w*num_boxes, 4))
 
-                    logits = t
-                    logits = dwc(logits, 384, scope='b_dwc_1')
-                    logits = dwc(logits, 128, scope='b_dwc_2')
-                    logits = dwc(logits, num_outputs, scope='b_dwc_3', output_activation_fn=None)
-                    logits = tf.reshape(logits, (-1, h*w*num_boxes, num_classes+4))
-                    loc,cls = tf.split(logits, [4, num_classes], axis=2)
+                    cls = t
+                    cls = dwc(cls, 256, scope='b_dwc_cls_2')
+                    cls = dwc(cls, num_boxes * num_classes, scope='b_dwc_cls_3')
+                    cls = tf.reshape(cls, (-1, h*w*num_boxes, num_classes))
+
+                    ## Coupled Localization/Classification Prediction
+                   #logits = t
+                    #logits = dwc(logits, 512, scope='b_dwc_1')
+                    #logits = dwc(logits, num_outputs, scope='b_dwc_2', output_activation_fn=None)
+                    #logits = tf.reshape(logits, (-1, h*w*num_boxes, num_classes+4))
+                    #loc,cls = tf.split(logits, [4, num_classes], axis=2)
+
                     output_tensors.append((loc,cls))
 
             d_boxes = []
@@ -308,7 +309,7 @@ def main(_):
 
         variables_to_restore = slim.get_variables_to_restore()
         
-        gpu_options = tf.GPUOptions(allow_growth=True, per_process_gpu_memory_fraction=0.3)
+        gpu_options = tf.GPUOptions(allow_growth=True, per_process_gpu_memory_fraction=0.65)
         config = tf.ConfigProto(log_device_placement=False, gpu_options=gpu_options)
 
         with tf.Session(config=config) as sess:
